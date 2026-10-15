@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/mglaeser/apple-raid-status/security/advisories/new
+    about: Do not disclose tokens or security reproductions in public issues.
+  - name: Homepage Custom API documentation
+    url: https://gethomepage.dev/widgets/services/customapi/
+    about: Configuration and formatting supported by Homepage's built-in widget.

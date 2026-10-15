@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose a focused improvement to read-only AppleRAID monitoring.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem needs solving?
+      description: Describe the monitoring task and why the current API or integration does not cover it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include the expected data source and any effect on dependencies, privileges, polling cost or compatibility.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: A dashboard configuration or separate collector may already meet the need.

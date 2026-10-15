@@ -1,0 +1,28 @@
+# Merge into Homepage services.yaml. Replace the documentation address and UUID.
+# Set HOMEPAGE_VAR_APPLE_RAID_TOKEN in Homepage's environment; do not paste a token here.
+# For a mounted secret file, set HOMEPAGE_FILE_APPLE_RAID_TOKEN to its container path
+# and replace the Authorization value with "Bearer {{HOMEPAGE_FILE_APPLE_RAID_TOKEN}}".
+- Storage:
+    - AppleRAID:
+        icon: mdi-harddisk
+        description: macOS RAID observations
+        href: http://192.0.2.10:8788/
+        widget:
+          type: customapi
+          url: http://192.0.2.10:8788/api/v1/raids/11111111-1111-4111-8111-111111111111
+          refreshInterval: 30000
+          headers:
+            Authorization: "Bearer {{HOMEPAGE_VAR_APPLE_RAID_TOKEN}}"
+          mappings:
+            - field: health
+              label: State
+              format: text
+            - field: raid.members_summary
+              label: Members
+              format: text
+            - field: raid.volume.free_bytes
+              label: Free
+              format: bytes
+            - field: raid.rebuild_summary
+              label: Rebuild
+              format: text

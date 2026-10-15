@@ -1,0 +1,48 @@
+name: Bug report
+description: Report incorrect observations, installation problems, or integration failures.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Use private vulnerability reporting for security issues. Remove tokens,
+        host addresses, disk serials and real storage UUIDs from everything below.
+  - type: input
+    id: version
+    attributes:
+      label: Helper version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: macOS and Python versions
+      placeholder: macOS version, Python version, CPU architecture
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How is the helper running?
+      options:
+        - Installed LaunchAgent
+        - Manual HTTP process
+        - One-shot collection
+        - Not yet installed
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction and expected behavior
+      description: Include the relevant RAID level and client or Homepage version, without private identifiers.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and sanitized evidence
+      description: Include the HTTP status and relevant redacted JSON or log lines. Do not attach an entire host inventory.
+    validations:
+      required: true
