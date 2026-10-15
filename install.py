@@ -144,7 +144,7 @@ def install(state, args):
     log = state / "service.log"
     definition = {"Label": LABEL, "ProgramArguments": [python, str(state / "app/apple_raid_status.py"), "--config", str(state / "config.json")],
                   "WorkingDirectory": str(state), "RunAtLoad": True, "KeepAlive": True,
-                  "ThrottleInterval": 30, "ProcessType": "Background", "LowPriorityIO": True,
+                  "ThrottleInterval": 30, "ProcessType": "Standard", "LowPriorityIO": True,
                   "EnvironmentVariables": {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"},
                   "StandardOutPath": str(log), "StandardErrorPath": str(log)}
     if current is not None and plistlib.loads(private_file(PLIST).encode()) != definition:
