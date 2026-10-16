@@ -33,6 +33,8 @@ This reports the operating system's observations. It does **not** provide SMART 
 
 The portable test suite runs on macOS and Linux. Actual collection requires macOS; Linux containers cannot inspect the host's AppleRAID through this tool. Resource use depends on the host and number of RAID sets; no fixed RAM or CPU guarantee is claimed.
 
+In the initial Apple Silicon deployment, the helper used **14–16 MiB resident memory** and showed **0.0% CPU in idle samples**. These observations exclude transient diskutil processes and are not resource limits. See [release validation](docs/validation.md) for the tested environment and limits.
+
 ## Quick start
 
 Download the tagged source using Git:
@@ -42,6 +44,8 @@ git clone --branch v0.1.0 --depth 1 https://github.com/mglaeser/apple-raid-statu
 cd apple-raid-status
 python3 apple_raid_status.py --once
 ```
+
+This path requires Git; macOS may offer to install Apple's Command Line Tools if Git is not installed. The collector itself uses only Python's standard library and the native diskutil command.
 
 The last command prints one local observation and exits. It opens no listening port and makes no storage changes. Find the wanted set's `uuid` in its output; use that stable UUID instead of a disk number or volume name.
 
@@ -113,13 +117,14 @@ Configuration is `config.json`, and the API secret is `token`, in the state dire
 
 Collector diagnostics are in `collector.log` in the same directory, rotated at 256 KiB with one backup. Launch-time errors go to `service.log`. The installer records the Python interpreter and installed-source checksums in `receipt.json`. If a Python upgrade removes that interpreter, stop the old service and reinstall with a supported `python3` before starting the helper.
 
-To upgrade, stop the service, obtain a reviewed release, and rerun that release's installer using the same state directory and intended options, then start it and verify `/readyz` and the dashboard. Keep the previous release for a manual rollback. There is no automatic update or rollback service.
+To upgrade, stop the service, obtain a reviewed release, and rerun that release's `python3 install.py install` using the same `--state-dir` if customized. Omit bind/port/expected-set options to preserve the existing settings. Start it, then verify `/readyz` and the dashboard. Keep the previous release for a manual rollback. There is no automatic update or rollback service.
 
 ## Documentation and development
 
 - [API and configuration](docs/API.md)
 - [Homepage setup](docs/homepage.md)
 - [Requirements, design decisions, and alternatives](docs/design.md)
+- [Release validation and measured footprint](docs/validation.md)
 - [Contributing and tests](CONTRIBUTING.md)
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
