@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 import uuid
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 DISK = re.compile(r"disk\d+(?:s\d+)*\Z")
 PROGRESS = re.compile(r"(\d+(?:\.\d+)?)%\s*\((?:Rebuilding|Resyncing)\)\Z", re.I)
 LOG = logging.getLogger("apple-raid-status")

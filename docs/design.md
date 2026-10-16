@@ -17,7 +17,7 @@ One small macOS process observes AppleRAID through supported read-only command-l
 | F7 | Integrate with Homepage directly | Ready-to-use four-block Custom API configuration, optional member list and secret-variable examples. |
 | F8 | Distinguish collection failures | Timestamps, sample age, collection errors, stale state and separate liveness/readiness. |
 | F9 | Support another dashboard | Stable versioned data contract independent of widget markup or Homepage internals. |
-| F10 | Operate as a local service | User LaunchAgent, install/start/stop/restart/status/uninstall commands and configurable state directory. |
+| F10 | Operate as a local service | One user LaunchAgent, named executable, persistent start/stop intent, serialized lifecycle commands and separate status/readiness checks. |
 
 ## Nonfunctional requirements
 
@@ -33,8 +33,14 @@ One small macOS process observes AppleRAID through supported read-only command-l
 | N8 | Portable integration | Plain HTTP/JSON and stable UUID selection; any client can consume it. |
 | N9 | Maintainability | Small source, documented schema, synthetic regression fixtures and standard-library tests on macOS/Linux. |
 | N10 | Reproducible adoption | Tagged source, license, public setup examples, lifecycle commands and explicit limitations. |
+| N11 | Predictable operator control | Fresh installation stays disabled; preparation preserves intent; explicit stop survives login; launchd alone recovers process exits. |
 
 These are implementation requirements, not claims about certification, exhaustive hardware compatibility, or a guaranteed resource budget.
+
+The [lifecycle contract](lifecycle.md) describes named executable identity,
+durable plist intent, native override handling, per-label serialization and the
+guarded migration from the first release. Read-only collection never changes
+storage as part of service start, stop or process recovery.
 
 ## Collection and HTTP flow
 

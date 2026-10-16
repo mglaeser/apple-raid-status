@@ -1,4 +1,22 @@
-# Initial release validation
+# Validation record
+
+## Version 0.2.0 lifecycle coverage
+
+The portable lifecycle suite adds tests for fresh disabled preparation, persisted
+start/stop intent when the external macOS override is absent, preparation after a
+deliberate stop, exact legacy migration, conflicting job identities, failure
+ordering, shared-label locking and installed commands without a source checkout.
+It also verifies interrupted-update recovery and the listener's PID/address
+before an API credential is sent.
+These fixtures do not bootstrap or stop a real launchd service.
+
+Live acceptance for this release is recorded separately in the
+[v0.2.0 release notes](https://github.com/mglaeser/apple-raid-status/releases/tag/v0.2.0).
+The measurements below belong to the initial release, not the corrected
+lifecycle. Neither fixture tests nor process recovery establish full host reboot
+acceptance.
+
+## Initial release
 
 Validation performed on 2026-10-16 for version 0.1.0. This records what was tested; it is not a claim of universal macOS or RAID compatibility.
 

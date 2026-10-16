@@ -82,7 +82,7 @@ Abbreviated synthetic per-set response; omitted fields remain part of the docume
 ```json
 {
   "schema_version": 1,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "collected_at": "2026-01-01T12:00:00Z",
   "attempted_at": "2026-01-01T11:59:59Z",
   "collection_ok": true,
@@ -130,5 +130,9 @@ The installer creates this exact-key JSON structure in `config.json`:
 - `expected_raids`: array of up to 64 UUIDs; these are tracked for disappearance. It does not hide other discovered sets from the aggregate route.
 
 The sibling `token` file contains 32–256 URL-safe letters, digits, underscores, or hyphens. The installer generates it. Both private files must be owned by the current user, regular files, mode `0600`, and accessed through paths without symlink components. Restart the helper after editing configuration or rotating the token, and update consumers when rotating.
+
+Local lifecycle state is separate from this HTTP contract. The installed
+launcher's `status` command reports saved/native startup intent and job state;
+`check` additionally verifies live readiness. See [service lifecycle](lifecycle.md).
 
 HTTP serving allows up to eight concurrent handlers, each with a three-second socket timeout. Excess connections are closed. These bounds keep the small private interface responsive; they are not a substitute for a reverse proxy when exposing it to untrusted networks.

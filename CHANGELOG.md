@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 — 2026-10-16
+
+- Use a named executable for launchd and local lifecycle commands, with an optional deployment-specific launcher path.
+- Fresh installation stays disabled; explicit start and stop persist intent in the owned plist as well as the native override. Reinstallation preserves intent.
+- Separate read-only lifecycle `status` from authenticated readiness `check`.
+- Serialize lifecycle mutations per stable user/label and validate the complete owned plist/launcher contract.
+- Guard the stopped migration from 0.1.0 while retaining configuration, token, API schema and launch label.
+- Retain a bounded private installation journal so interrupted multi-file updates can be checked and recovered by a reviewed install retry.
+- Keep launchd as the sole process-exit recovery owner; no running-process watchdog or additional scheduler.
+
+Behavior change: `stop` now remains stopped after login, and `status` can report a deliberately stopped job successfully. Scripts that require readiness should use `check`.
+
 ## 0.1.0 — 2026-10-16
 
 Initial release.

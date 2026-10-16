@@ -40,7 +40,7 @@ In the initial Apple Silicon deployment, the helper used **14–16 MiB resident 
 Download the tagged source using Git:
 
 ```sh
-git clone --branch v0.1.0 --depth 1 https://github.com/mglaeser/apple-raid-status.git
+git clone --branch v0.2.0 --depth 1 https://github.com/mglaeser/apple-raid-status.git
 cd apple-raid-status
 python3 apple_raid_status.py --once
 ```
@@ -56,9 +56,10 @@ python3 install.py install --bind 127.0.0.1 --port 8788 \
   --expect 11111111-1111-4111-8111-111111111111
 python3 install.py start
 python3 install.py status
+python3 install.py check
 ```
 
-The default state directory is `~/Library/Application Support/apple-raid-status`. The installer creates private configuration and a random token there. Use `--state-dir /absolute/path` consistently on every installer command to choose another location.
+The default state directory is `~/Library/Application Support/apple-raid-status`. The installer creates private configuration and a random token there. A fresh installation stays disabled until explicit `start`; repeating installation preserves existing start/stop intent. Use `--state-dir /absolute/path` consistently on every installer command to choose another location.
 
 Read the authenticated JSON API locally:
 
@@ -99,17 +100,24 @@ HTTP does not encrypt credentials or observations. Keep direct HTTP on a trusted
 
 ## Service lifecycle
 
+The installer creates the executable `bin/AppleRAID Status` inside the state directory. Use this installed launcher for normal lifecycle operations; no Git checkout is needed:
+
 ```sh
-python3 install.py status
-python3 install.py restart
-python3 install.py stop
-python3 install.py start
-python3 install.py uninstall
+raid_helper="$HOME/Library/Application Support/apple-raid-status/bin/AppleRAID Status"
+"$raid_helper" status
+"$raid_helper" check
+"$raid_helper" stop
+"$raid_helper" start
+"$raid_helper" restart
 ```
 
-The launch agent is `io.github.mglaeser.apple-raid-status`. It starts **when its user logs in**, not before login or FileVault unlock. This is deliberately a user LaunchAgent, not a boot LaunchDaemon. It supervises only this helper; it never mounts, repairs, rebuilds, or changes a RAID.
+`status` reports saved startup intent, the native disabled override and the loaded job. An intentionally stopped service is a valid status. `check` additionally requires an enabled, running service and a fresh successful collection; it fails when the helper is stopped or not ready. RAID health is reported separately from collector readiness.
 
-`stop` unloads it for the current login session; the installed agent starts again at the next login. `uninstall` also removes the LaunchAgent so it no longer starts at login, while retaining the private state directory, token, installed source and logs. Remove those retained files manually only when they are no longer needed.
+The stable launch label remains `io.github.mglaeser.apple-raid-status`. Explicit `start` saves enabled intent; `stop` saves disabled intent and unloads the exact job. **A stopped helper stays stopped at subsequent logins until explicitly started.** An enabled helper starts when its user logs in, not before login or FileVault unlock. Launchd alone handles process-exit recovery with a 30-second throttle. It does not restart a running but unresponsive process.
+
+For a site-specific display name, choose the full user-owned executable path with `install --launcher "/absolute/path/My AppleRAID Status"`. The named executable is the job's program; its shell immediately replaces itself with the installed Python lifecycle entry point. This avoids displaying a generic Python interpreter as the background item's identity. The stable label and HTTP API do not change. See [lifecycle, naming and migration](docs/lifecycle.md) for exact semantics and upgrade steps.
+
+`python3 install.py uninstall` stops the helper and removes its owned LaunchAgent and launcher while retaining private configuration, token, installed source and logs. Use the chosen `--state-dir` when customized. Remove retained state manually only when it is no longer needed.
 
 Defaults are a **30-second polling interval**, a **10-second timeout per diskutil command**, and a **90-second stale threshold**. Collection also has a **30-second overall deadline**. Requests read cached data and do not trigger additional disk probes. Collection and HTTP serving are separate, so a slow probe does not block the API.
 
@@ -117,11 +125,12 @@ Configuration is `config.json`, and the API secret is `token`, in the state dire
 
 Collector diagnostics are in `collector.log` in the same directory, rotated at 256 KiB with one backup. Launch-time errors go to `service.log`. The installer records the Python interpreter and installed-source checksums in `receipt.json`. If a Python upgrade removes that interpreter, stop the old service and reinstall with a supported `python3` before starting the helper.
 
-To upgrade, stop the service, obtain a reviewed release, and rerun that release's `python3 install.py install` using the same `--state-dir` if customized. Omit bind/port/expected-set options to preserve the existing settings. Start it, then verify `/readyz` and the dashboard. Keep the previous release for a manual rollback. There is no automatic update or rollback service.
+To upgrade, stop the service using its installed launcher, obtain a reviewed release, and rerun that release's `python3 install.py install` using the same `--state-dir` if customized. Omit bind/port/expected-set options to preserve the existing settings. Explicitly start it when intended, then run `check` and verify the dashboard. **Upgrading from 0.1.0 needs the documented legacy stop step:** that release had no installed launcher and its stop did not persist across login. Follow [the migration instructions](docs/lifecycle.md#upgrading-from-010). There is no automatic update or rollback service.
 
 ## Documentation and development
 
 - [API and configuration](docs/API.md)
+- [Lifecycle, naming and migration](docs/lifecycle.md)
 - [Homepage setup](docs/homepage.md)
 - [Requirements, design decisions, and alternatives](docs/design.md)
 - [Release validation and measured footprint](docs/validation.md)
