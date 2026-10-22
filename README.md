@@ -17,7 +17,7 @@ macOS diskutil → cached AppleRAID observations → authenticated HTTP API
 
 - Set and member states, online/total member count, RAID capacity and automatic rebuild policy.
 - APFS container capacity/free/used space, linked to the RAID's physical store; supported legacy filesystem space where reported.
-- Rebuild progress **only when diskutil explicitly reports a percentage**. Otherwise the API says that progress is unavailable.
+- Rebuild progress from an explicit diskutil percentage or a valid Mirror member byte counter divided by RAID capacity. Otherwise progress remains unavailable.
 - Freshness timestamps, stale/error states, expected-RAID disappearance detection, and separate liveness/readiness endpoints.
 - Copy-and-paste configuration for Homepage's built-in **Custom API** widget. No custom Homepage build or plugin installation.
 - A minimal authenticated status page and a per-user `launchd` installer.
@@ -40,7 +40,7 @@ In the initial Apple Silicon deployment, the helper used **14–16 MiB resident 
 Download the tagged source using Git:
 
 ```sh
-git clone --branch v0.2.0 --depth 1 https://github.com/mglaeser/apple-raid-status.git
+git clone --branch v0.2.1 --depth 1 https://github.com/mglaeser/apple-raid-status.git
 cd apple-raid-status
 python3 apple_raid_status.py --once
 ```

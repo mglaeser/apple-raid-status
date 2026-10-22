@@ -51,12 +51,20 @@ Overall state precedence is `error`, `stale`, `missing`, `offline`, `degraded`, 
 | `auto_rebuild` | `true`, `false`, or `null` when policy is unavailable/unrecognized. |
 | `member_count`, `online_members`, `members_summary` | Member count, online member count, and text such as `2/2`. Spares are excluded. |
 | `rebuilding` | Whether the retained observation reports active rebuild/resync. |
-| `rebuild_percent` | Explicit member percentage, or `null`. With several rebuilding members, the minimum is used only if every rebuilding member reports a valid percentage. |
+| `rebuild_percent` | Explicit member percentage or validated Mirror byte-counter percentage, otherwise `null`. With several rebuilding members, the minimum is used only if every rebuilding member has known progress. |
 | `rebuild_summary` | Ready-to-display text: percentage, unavailable-progress explanation, `Not rebuilding`, `Unknown`, or a freshness/error explanation. |
 | `members`, `spares` | Member objects, each with `uuid`, `device`, raw `status`, normalized `health`, and nullable `rebuild_percent`. |
 | `volume` | Linked filesystem/container space and mount observations, below. |
 
-Unknown raw states stay unknown. A rebuild at `100%` remains rebuilding until the OS reports completion. Explicit `N% (Rebuilding)` or `N% (Resyncing)` member states are recognized; no rate, byte-derived progress, or ETA is estimated.
+Unknown raw states stay unknown. A rebuild at `100%` remains rebuilding until the OS reports completion. No rate or ETA is estimated.
+
+For rebuilding members, progress uses this precedence:
+
+1. An explicit `N% (Rebuilding)` or `N% (Resyncing)` member state takes precedence. Values outside `0`–`100` remain `null`, even if a byte counter is also present.
+2. For a `Mirror` member in plain `Rebuilding` or `Resyncing` state, compute `100 * MemberRebuildStatus / Size`. AppleRAID reports `MemberRebuildStatus` in bytes; `Size` is the RAID capacity, not free filesystem space or member count. Both values must be integers (excluding booleans) no larger than `2^63 - 1`, with `0 <= MemberRebuildStatus <= Size` and `Size > 0`. Zero bytes is valid progress. Missing, negative, noninteger or out-of-range values remain `null`.
+3. Other RAID levels, spares, and members outside rebuilding/resyncing state do not use byte counters. A leftover counter on an online or failed member cannot indicate an active rebuild.
+
+The numeric percentage is not rounded before aggregation. The display summary uses a compact representation; neither a displayed nor numeric `100%` overrides the native member state.
 
 Expected UUIDs missing from diskutil are represented by an object whose `status` is `Missing`, `health` is `missing`, measurements are unavailable, and member lists are empty. Consumers must not infer health from `members_summary: "0/0"`.
 
@@ -82,7 +90,7 @@ Abbreviated synthetic per-set response; omitted fields remain part of the docume
 ```json
 {
   "schema_version": 1,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "collected_at": "2026-01-01T12:00:00Z",
   "attempted_at": "2026-01-01T11:59:59Z",
   "collection_ok": true,

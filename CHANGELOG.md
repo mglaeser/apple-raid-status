@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — 2026-10-22
+
+- Report Mirror rebuild percentages from valid native `MemberRebuildStatus` byte counters and RAID capacity when no explicit percentage is present.
+- Preserve explicit-percentage precedence, unknown progress for invalid or incomplete observations, and native rebuild state even at `100%`.
+- Add synthetic regression coverage for progress boundaries, malformed counters, other RAID levels, stale member counters and multiple rebuilding members.
+
 ## 0.2.0 — 2026-10-16
 
 - Use a named executable for launchd and local lifecycle commands, with an optional deployment-specific launcher path.

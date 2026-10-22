@@ -134,7 +134,7 @@ Members are named by stable member UUID, including when their BSD device is abse
 | `404` on a RAID URL | Correct UUID; set still present. Homepage displays its normal API error when a selected set disappears. The aggregate route provides a structured missing-set observation. |
 | `error` / `stale` | Collector logs and `/readyz`; do not treat retained member/space values as fresh. |
 | Free space unavailable | The OS did not provide usable capacity or the helper could not prove a unique filesystem/container relationship. |
-| Rebuild percentage unavailable | OS supplied a rebuild state without an explicit percentage; the helper does not estimate one. |
+| Rebuild percentage unavailable | OS supplied neither a valid explicit percentage nor usable mirror byte progress and RAID capacity. Refreshing cannot supply missing native data. |
 | No conditional colors | Custom API does not support block highlighting. This is a Homepage limitation, not an API failure. |
 
 The helper does not send alerts or supply long-term history. Homepage's widget presents current observations. Storage-management actions remain outside this integration.
