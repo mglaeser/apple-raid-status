@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 import uuid
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 DISK = re.compile(r"disk\d+(?:s\d+)*\Z")
 PROGRESS = re.compile(r"(\d+(?:\.\d+)?)%\s*\((?:Rebuilding|Resyncing)\)\Z", re.I)
 LOG = logging.getLogger("apple-raid-status")
@@ -68,16 +68,24 @@ def member_health(state):
     return "unknown"
 
 
-def normalize_member(raw):
+def normalize_member(raw, mirror_size=None):
     state = bounded_text(raw.get("MemberStatus"), "member status")
+    health = member_health(state)
     match = PROGRESS.fullmatch(state)
     percent = float(match[1]) if match and 0 <= float(match[1]) <= 100 else None
+    if match is None and health == "rebuilding":
+        rebuilt = natural(raw.get("MemberRebuildStatus"))
+        total = natural(mirror_size)
+        # Mirror progress is a byte offset, not a percentage. An explicit
+        # percentage above remains authoritative, including invalid values.
+        if rebuilt is not None and total is not None and 0 < total and rebuilt <= total:
+            percent = rebuilt * 100 / total
     bsd = device(raw.get("BSD Name"))
     if state == "Online" and not bsd:
         raise ValueError("online member has no device")
     return {"uuid": identifier(raw["AppleRAIDMemberUUID"]),
             "device": bsd, "status": state,
-            "health": member_health(state), "rebuild_percent": percent}
+            "health": health, "rebuild_percent": percent}
 
 
 def unavailable_volume(status="unavailable"):
@@ -91,15 +99,15 @@ def normalize_raid(raw):
     spares = raw.get("Spares", [])
     if not isinstance(members, list) or not isinstance(spares, list) or len(members) + len(spares) > 128:
         raise ValueError("invalid RAID membership")
-    members = [normalize_member(m) for m in members]
+    state = bounded_text(raw.get("Status"), "RAID status")
+    level = bounded_text(raw.get("Level"), "RAID type")
+    size = natural(raw.get("Size"))
+    members = [normalize_member(m, size if level == "Mirror" else None) for m in members]
     spares = [normalize_member(m) for m in spares]
     ids = [m["uuid"] for m in members + spares]
     devices = [m["device"] for m in members + spares if m["device"] is not None]
     if len(ids) != len(set(ids)) or len(devices) != len(set(devices)):
         raise ValueError("duplicate RAID membership")
-    state = bounded_text(raw.get("Status"), "RAID status")
-    level = bounded_text(raw.get("Level"), "RAID type")
-    size = natural(raw.get("Size"))
     online = sum(m["health"] == "healthy" for m in members)
     rebuilding = any(m["health"] == "rebuilding" for m in members) or state in ("Rebuilding", "Resyncing")
     health = "unknown"

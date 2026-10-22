@@ -11,7 +11,7 @@ One small macOS process observes AppleRAID through supported read-only command-l
 | F1 | Discover AppleRAID sets | Parse `diskutil appleRAID list -plist`; expose stable set/member UUIDs and current device identifiers. |
 | F2 | Report storage state | Raw OS state plus normalized healthy/degraded/rebuilding/offline/missing/unknown states. |
 | F3 | Report basic metrics | Set capacity, online/total members, automatic rebuild policy, linked filesystem/container space. |
-| F4 | Report rebuilding honestly | Explicit member percentages only; preserve unknown progress and never infer completion from `100%`. |
+| F4 | Report rebuilding honestly | Explicit member percentages, or validated mirror byte progress divided by RAID capacity; preserve unknown progress and never infer completion from `100%`. |
 | F5 | Detect disappearance | Configured expected UUIDs produce missing-set observations; per-set requests return `404` for absent sets. |
 | F6 | Expose remote observations | Authenticated JSON over HTTP, aggregate and UUID-specific routes. |
 | F7 | Integrate with Homepage directly | Ready-to-use four-block Custom API configuration, optional member list and secret-variable examples. |
@@ -64,7 +64,7 @@ The server uses Python's standard HTTP server for a narrow, private monitoring i
 - The OS may report rebuilding without a usable percentage. A missing percentage is not zero.
 - Mirror, stripe and concatenated sets have different redundancy properties. `healthy` means recognized online membership for the reported level; it does not mean every level tolerates a failed disk.
 
-Apple's [AppleRAID definitions](https://github.com/apple-oss-distributions/AppleRAID/blob/main/AppleRAIDUserLib.h) document its states and a native byte-progress property. This helper does not call that private API or assume that its properties have identical names in diskutil output.
+Apple's [AppleRAID definitions](https://github.com/apple-oss-distributions/AppleRAID/blob/57b220120900b68694f642838aa25249417fe4a8/AppleRAIDUserLib.h#L126) document rebuild progress as bytes completed. The [mirror implementation](https://github.com/apple-oss-distributions/AppleRAID/blob/57b220120900b68694f642838aa25249417fe4a8/AppleRAIDMirrorSet.cpp#L133-L137) uses the mirror's logical size as the total. Native `diskutil appleRAID list -plist` observations expose this counter as `MemberRebuildStatus` and the total as `Size`. The helper uses those plist fields only for rebuilding mirror members with valid bounded integer values; it does not call a private API or use filesystem used space as the denominator. See the [API contract](API.md) for precedence and unavailable-progress handling.
 
 ## Why the existing alternatives do not provide this interface
 

@@ -1,5 +1,23 @@
 # Validation record
 
+## Version 0.2.1 rebuild progress
+
+The 66-test portable suite covers native mirror byte-counter conversion,
+zero/full progress, invalid counters and capacity, explicit-percentage
+precedence, other RAID levels, leftover counters on inactive members, and
+conservative aggregation of several rebuilding members. The HTTP schema and
+native lifecycle remain unchanged.
+
+A read-only `--once` smoke test on macOS 27.0.1 / Apple Silicon on 22 October
+2026 observed an already-rebuilding mirror. Version 0.2.1 returned numeric
+progress of approximately 19.5%, one online member out of two, and mounted APFS
+capacity. It correctly retained `health: rebuilding` and `healthy: false`.
+The test did not initiate or interrupt a rebuild. This is one native format
+observation, not a claim that every macOS release exposes the same fields.
+
+Installed-service and dashboard acceptance is recorded separately in the
+[v0.2.1 release notes](https://github.com/mglaeser/apple-raid-status/releases/tag/v0.2.1).
+
 ## Version 0.2.0 lifecycle coverage
 
 The portable lifecycle suite adds tests for fresh disabled preparation, persisted

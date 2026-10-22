@@ -144,7 +144,109 @@ class CollectorTests(unittest.TestCase):
             with self.assertRaises(subprocess.TimeoutExpired):
                 app.collect(run=run_fixture)
 
-    def test_bytes_progress_not_mistaken_for_percent(self):
+    def test_mirror_byte_progress_uses_raid_capacity_not_percent_or_free_space(self):
+        raw = fixture()["AppleRAIDSets"][0]
+        member = raw["Members"][1]
+        member["MemberStatus"] = "Rebuilding"
+        member["MemberRebuildStatus"] = 25
+        result = app.normalize_raid(raw)
+        self.assertEqual(result["rebuild_percent"], 25 * 100 / raw["Size"])
+        self.assertNotEqual(result["rebuild_percent"], 25)
+        self.assertEqual(result["members"][1]["rebuild_percent"], result["rebuild_percent"])
+        member["MemberRebuildStatus"] = raw["Size"] // 4
+        result = app.collect(run=lambda args: {"AppleRAIDSets": [raw]}
+                             if args == ["appleRAID", "list", "-plist"] else run_fixture(args))[0]
+        self.assertEqual(result["rebuild_percent"], 25)
+        self.assertEqual(result["rebuild_summary"], "25%")
+
+    def test_mirror_byte_progress_endpoints_do_not_change_native_health(self):
+        for state in ("Rebuilding", "Resyncing"):
+            for fraction in (0, 1):
+                with self.subTest(state=state, fraction=fraction):
+                    raw = fixture()["AppleRAIDSets"][0]
+                    raw["Members"][1].update(MemberStatus=state, MemberRebuildStatus=raw["Size"] * fraction)
+                    result = app.normalize_raid(raw)
+                    self.assertEqual(result["rebuild_percent"], fraction * 100)
+                    self.assertEqual(result["health"], "rebuilding")
+                    self.assertTrue(result["rebuilding"])
+                    self.assertFalse(result["healthy"])
+                    self.assertEqual(result["online_members"], 1)
+
+    def test_invalid_mirror_byte_counters_stay_unknown(self):
+        raw = fixture()["AppleRAIDSets"][0]
+        for value in (None, False, True, "25", 25.0, -1, raw["Size"] + 1, 2**63):
+            with self.subTest(value=value):
+                raw["Members"][1].update(MemberStatus="Rebuilding", MemberRebuildStatus=value)
+                result = app.normalize_raid(raw)
+                self.assertIsNone(result["rebuild_percent"])
+                self.assertIsNone(result["members"][1]["rebuild_percent"])
+                self.assertEqual(result["rebuild_summary"], "In progress; percentage unavailable")
+
+    def test_invalid_mirror_capacity_keeps_byte_progress_unknown(self):
+        for value in (None, False, True, "100", 100.0, -1, 0, 2**63):
+            with self.subTest(value=value):
+                raw = fixture()["AppleRAIDSets"][0]
+                raw["Size"] = value
+                raw["Members"][1].update(MemberStatus="Rebuilding", MemberRebuildStatus=0)
+                result = app.normalize_raid(raw)
+                self.assertIsNone(result["rebuild_percent"])
+                self.assertFalse(result["healthy"])
+
+    def test_explicit_progress_precedes_byte_counter_and_capacity_validation(self):
+        for level in ("Mirror", "Stripe"):
+            for capacity in (None, 2000000000000):
+                for state, expected in (("17.4% (Rebuilding)", 17.4), ("0% (Resyncing)", 0),
+                                        ("100% (Rebuilding)", 100), ("101% (Rebuilding)", None)):
+                    with self.subTest(level=level, capacity=capacity, state=state):
+                        raw = fixture()["AppleRAIDSets"][0]
+                        raw.update(Level=level, Size=capacity)
+                        raw["Members"][1].update(MemberStatus=state, MemberRebuildStatus=0)
+                        result = app.normalize_raid(raw)
+                        self.assertEqual(result["rebuild_percent"], expected)
+                        self.assertEqual(result["health"], "rebuilding")
+                        self.assertFalse(result["healthy"])
+
+    def test_byte_progress_not_inferred_for_other_levels_or_inactive_members(self):
+        for level in ("Stripe", "Concat", "Concatenated", "Unknown"):
+            with self.subTest(level=level):
+                raw = fixture()["AppleRAIDSets"][0]
+                raw["Level"] = level
+                raw["Members"][1].update(MemberStatus="Rebuilding", MemberRebuildStatus=100)
+                self.assertIsNone(app.normalize_raid(raw)["rebuild_percent"])
+        for state in ("Online", "Failed", "Missing", "Offline", "Mystery"):
+            with self.subTest(state=state):
+                raw = fixture()["AppleRAIDSets"][0]
+                raw["Members"][1].update(MemberStatus=state, MemberRebuildStatus=100)
+                result = app.normalize_raid(raw)
+                self.assertIsNone(result["members"][1]["rebuild_percent"])
+                self.assertIsNone(result["rebuild_percent"])
+                self.assertFalse(result["rebuilding"])
+        raw["Status"] = "Rebuilding"
+        self.assertIsNone(app.normalize_raid(raw)["rebuild_percent"])
+
+    def test_multiple_rebuilding_members_require_all_progress_before_minimum(self):
+        raw = fixture()["AppleRAIDSets"][0]
+        raw["Members"][0].update(MemberStatus="Rebuilding", MemberRebuildStatus=raw["Size"] // 4)
+        raw["Members"][1].update(MemberStatus="Resyncing", MemberRebuildStatus=raw["Size"] // 2)
+        self.assertEqual(app.normalize_raid(raw)["rebuild_percent"], 25)
+        raw["Members"][1]["MemberStatus"] = "17.4% (Resyncing)"
+        self.assertEqual(app.normalize_raid(raw)["rebuild_percent"], 17.4)
+        raw["Members"][1]["MemberStatus"] = "Rebuilding"
+        raw["Members"][1].pop("MemberRebuildStatus")
+        self.assertIsNone(app.normalize_raid(raw)["rebuild_percent"])
+        raw["Members"][1]["MemberRebuildStatus"] = -1
+        self.assertIsNone(app.normalize_raid(raw)["rebuild_percent"])
+
+    def test_spare_byte_progress_does_not_infer_member_rebuilding(self):
+        raw = fixture()["AppleRAIDSets"][0]
+        raw["Spares"] = [{"AppleRAIDMemberUUID": "00000000-0000-4000-8000-000000000004",
+                          "BSD Name": "disk8s2", "MemberStatus": "Rebuilding", "MemberRebuildStatus": 25}]
+        result = app.normalize_raid(raw)
+        self.assertIsNone(result["spares"][0]["rebuild_percent"])
+        self.assertIsNone(result["rebuild_percent"])
+        self.assertFalse(result["rebuilding"])
+
+    def test_unrecognized_progress_field_is_not_a_percent_or_supported_counter(self):
         raw = fixture()["AppleRAIDSets"][0]
         raw["Members"][1]["MemberStatus"] = "Rebuilding"
         raw["Members"][1]["AppleRAID-Rebuild-Progress"] = 123456789
