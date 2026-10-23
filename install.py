@@ -20,7 +20,7 @@ import time
 import urllib.request
 import uuid
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 LABEL = "io.github.mglaeser.apple-raid-status"
 DEFAULT_STATE = Path.home() / "Library/Application Support/apple-raid-status"
 LOCK_DIR = Path.home() / "Library/Application Support/apple-raid-status-lifecycle"

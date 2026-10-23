@@ -95,3 +95,26 @@ preflight and `force_supported:true` describe the helper's admitted action, not
 native permission or a successful ejection. External hotplug/local disk operators
 can still change storage between separate read and mutation commands; no claim
 of atomic storage exclusion is made.
+
+## 0.3.1 physical preflight validation — 23 October 2026
+
+The installed 0.3.0 helper reported `preflight_unavailable` despite healthy
+monitoring. A foreground reproduction ruled out authentication and launchd-only
+behavior. Native sampling located the blocked read-only `diskutil info` call in
+`wholeDiskSupportsLowLevelFormat`, waiting in `open()` on the physical whole disk;
+it exceeded both 10-second and 35-second bounds. No unmount or eject was attempted.
+
+The installed manual documents simultaneous `list -plist external physical`
+filters with an explicit device. Native read-only checks returned an exact single
+external physical GPT inventory for each member; an actual internal physical disk
+and a virtual RAID device were both excluded. Parent/partition inventory, size,
+`OSInternal:false` and opaque member `DeviceTreePath` were present. This replaces
+the unrelated whole-disk capability probe while retaining partition safety and
+identity checks. Portable regression fixtures make whole-disk `info` time out,
+and cover filter exclusion, incomplete or inconsistent inventories, mandatory
+GPT/internal/size evidence, every partition's safety flags and opaque identity.
+
+The complete portable suite passed **102 tests**; source compilation and
+`git diff --check` passed. Updated native read-only preflight accepted the same
+Online mirror (two physical members and two APFS volumes) in **6.354 seconds**.
+Native unmount/eject execution and permission behavior remain untested, as above.

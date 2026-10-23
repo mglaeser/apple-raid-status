@@ -90,7 +90,7 @@ Abbreviated synthetic per-set response; omitted fields remain part of the docume
 ```json
 {
   "schema_version": 1,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "collected_at": "2026-01-01T12:00:00Z",
   "attempted_at": "2026-01-01T11:59:59Z",
   "collection_ok": true,
@@ -188,6 +188,14 @@ two online members and no spares, rejects rebuilding/resync/unknown states, and
 verifies external physical GPT ancestry, member UUIDs, partition UUIDs and the
 single APFS physical store. Only the exact RAID member, one EFI partition and an
 optional member-referenced Apple_Boot helper are allowed on each physical disk.
+The physical parent is classified by native `list -plist external physical`
+filters with the exact derived device, one matching `WholeDisks` entry and GPT
+row, `OSInternal:false`, positive size and a complete matching partition inventory.
+Every partition must independently report external, non-system, ejectable media,
+the exact parent and partition UUID, and no mount. The member's opaque
+`DeviceTreePath` is retained as an identity fingerprint. Full whole-disk `info`
+is deliberately avoided because its unrelated low-level-format capability probe
+can block on active RAID media.
 APFS volume roles must be empty or Backup; system/boot/locked/migrating volumes
 are excluded. Cached monitoring results do not grant eligibility.
 

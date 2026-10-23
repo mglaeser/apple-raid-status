@@ -112,6 +112,26 @@ excluded. The preserved physical identity plan is rechecked before each ejection
 the second member is never selected by reinterpreting a now-degraded set. Native
 mount checks follow unmount and precede every member eject.
 
+Since 0.3.1, physical classification comes from the documented combined
+`diskutil list -plist external physical DEVICE` filters, which apply to the
+whole disk even with an explicit device. The derived parent must be the only
+`WholeDisks` entry and the only GPT row, with `OSInternal:false` and positive
+`Size`. `AllDisks` must exactly equal that parent plus all unique admitted
+partitions; hidden, duplicate or incomplete inventory is refused. Every partition
+still passes `info` checks for parent, UUID, external/non-system/ejectable media,
+content and mount state. [Apple's GPT implementation](https://github.com/apple-oss-distributions/IOStorageFamily/blob/main/IOGUIDPartitionScheme.cpp)
+initializes child partitions with their provider's media attributes, including
+ejectability; no whole flags are fabricated. The member partition's unparsed `DeviceTreePath`, member
+UUID, partition UUIDs and whole size form the preserved identity plan.
+
+This avoids `info` on the physical whole disk: on the validated host its
+`wholeDiskSupportsLowLevelFormat` capability probe stalled in `open()` on active
+RAID media. Increasing its timeout did not help. Native `list` filtering retains
+whole-disk classification without requesting that unrelated capability. The
+installed macOS 27.0.1 manual and read-only exclusion probes confirmed internal
+and virtual devices produce empty filtered inventories. Other layouts or
+missing evidence fail closed; there is no fallback to unfiltered classification.
+
 A separate control allowlist/token and Bearer-only POST leave existing clients
 read-only. A shared operation lock serializes preflight/action with collection.
 The private intent/result journal refuses duplicate request IDs for 24 hours and

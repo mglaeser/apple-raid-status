@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 import uuid
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 DISK = re.compile(r"disk\d+(?:s\d+)*\Z")
 PROGRESS = re.compile(r"(\d+(?:\.\d+)?)%\s*\((?:Rebuilding|Resyncing)\)\Z", re.I)
 LOG = logging.getLogger("apple-raid-status")
@@ -352,18 +352,19 @@ def member_plan(run, raw, raid_uuid):
                     and not info.get("MountPoint"))
     whole = info.get("ParentWholeDisk")
     control_require(isinstance(whole, str) and re.fullmatch(r"disk\d+", whole))
-    physical = control_info(run, whole)
-    control_external(physical)
-    control_require(physical.get("WholeDisk") is True and physical.get("VirtualOrPhysical") == "Physical"
-                    and physical.get("RAIDSlice") is False and physical.get("RAIDMaster") is False
-                    and physical.get("Content") == "GUID_partition_scheme" and not physical.get("MountPoint"))
-    tree = bounded_text(physical.get("DeviceTreePath"), "device tree")
-    size = natural(physical.get("TotalSize"))
-    control_require(size is not None and size > 0)
-    disks = run(["list", "-plist", whole]).get("AllDisksAndPartitions")
-    control_require(isinstance(disks, list) and len(disks) == 1
+    # Native list filters apply at whole-disk level, including explicit devices.
+    # Full whole-disk info also probes low-level formatting support and can block
+    # opening active RAID media. Partition info retains the identity/safety checks.
+    inventory = run(["list", "-plist", "external", "physical", whole])
+    disks = inventory.get("AllDisksAndPartitions")
+    control_require(inventory.get("WholeDisks") == [whole]
+                    and isinstance(disks, list) and len(disks) == 1
                     and disks[0].get("DeviceIdentifier") == whole
-                    and disks[0].get("Content") == "GUID_partition_scheme")
+                    and disks[0].get("Content") == "GUID_partition_scheme"
+                    and disks[0].get("OSInternal") is False)
+    tree = bounded_text(info.get("DeviceTreePath"), "device tree")
+    size = natural(disks[0].get("Size"))
+    control_require(size is not None and size > 0)
     partitions = disks[0].get("Partitions")
     control_require(isinstance(partitions, list) and 2 <= len(partitions) <= 3)
     seen, identities, efi, boot, member = set(), [], 0, 0, 0
@@ -390,6 +391,10 @@ def member_plan(run, raw, raid_uuid):
         identities.append((part_device, partition_uuid, content))
     control_require(member == 1 and efi == 1 and boot <= 1
                     and (not info.get("BooterDeviceIdentifier") or boot == 1))
+    all_disks = inventory.get("AllDisks")
+    control_require(isinstance(all_disks, list) and len(all_disks) == len(seen) + 1
+                    and all(isinstance(item, str) for item in all_disks)
+                    and set(all_disks) == seen | {whole})
     return {"device": whole, "member_device": bsd, "member_uuid": member_uuid,
             "tree": tree, "size": size, "partitions": sorted(identities)}
 

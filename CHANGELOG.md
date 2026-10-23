@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 — 2026-10-23
+
+- Avoid a blocking whole-disk `info` probe during eject eligibility and identity rechecks. Native sampling found it stalled opening active RAID media while checking low-level formatting support, causing `preflight_unavailable`.
+- Classify each derived physical parent with documented `list -plist external physical DEVICE` filters and exact whole/partition inventory checks. Preserve GPT, system-media, external/ejectable, partition UUID, member UUID, size and opaque member device-path guards; ambiguous or incomplete results remain ineligible.
+- Add synthetic regression coverage and a native read-only preflight check. No real eject or unmount is used for validation.
+
 ## 0.3.0 — 2026-10-23
 
 - Add disabled-by-default normal/force eject for explicitly admitted healthy external two-member APFS mirrors, using a separate control credential and exact UUID confirmation.
