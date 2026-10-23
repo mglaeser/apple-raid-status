@@ -25,9 +25,9 @@ One small macOS process observes AppleRAID through supported read-only command-l
 | --- | --- | --- |
 | N1 | Small deployment | Python standard library only; no pip packages, database, container, cloud, or mandatory metrics platform. |
 | N2 | Low steady load | One background collector; 30-second default delay after collection; all HTTP clients share a cache. |
-| N3 | Read-only operation | Fixed `diskutil appleRAID list`, `apfs list`, and `info` commands with plist output; no repair, format, mount, rebuild, or write API. |
+| N3 | Separate observation/control authority | Monitoring uses fixed read-only plist commands. Explicit opt-in control adds only guarded unmount/eject with a separate credential; no repair, format, mount or rebuild API. |
 | N4 | Limited privileges | Run as the installing user; no root collector, sudo rule or private-framework dependency. |
-| N5 | Bounded work | Per-command timeout and 30-second whole-collection deadline; bounded set/member counts; eight HTTP handlers and three-second socket timeouts; no request-triggered disk scans. |
+| N5 | Bounded work | Per-command timeout and 30-second whole-collection deadline; bounded set/member counts; eight HTTP handlers and three-second socket timeouts; monitoring never triggers scans. Optional control preflight has a 30-second bound, action a 150-second overall deadline. |
 | N6 | No false reassurance | Failures immediately override retained health; unknown data stays unknown; liveness is independent of RAID health. |
 | N7 | Private configuration | Random token, owner-only private files, explicit remote binding, no credential/query logging. |
 | N8 | Portable integration | Plain HTTP/JSON and stable UUID selection; any client can consume it. |
@@ -48,7 +48,7 @@ storage as part of service start, stop or process recovery.
 2. It validates identifiers, sizes, states and membership, then normalizes the observations.
 3. It discovers APFS containers and relates physical stores to RAID devices. Related volume identity checks supply mount observations. A legacy fallback asks only the RAID device for filesystem space.
 4. A successful collection atomically replaces the application's in-memory cache. The underlying diskutil reads are sequential, not an atomic OS snapshot.
-5. HTTP requests copy that cache, add age/freshness state and optionally select a UUID. They never initiate storage work.
+5. HTTP requests copy that cache, add age/freshness state and optionally select a UUID. They never initiate storage work. Optional control requests use a separate fresh preflight and operation lock; they do not treat this cache as authority.
 6. A failed collection retains the last sample for context but changes effective health to `error`. Excessive age produces `stale`.
 
 Only one polling thread runs. Each diskutil subprocess uses the shorter of its configured timeout and the remaining 30-second collection deadline. Timeout accounting bounds user-space work; it cannot make guarantees about an uninterruptible kernel storage request. The helper waits for its normal next attempt and does not retry rapidly or run repairs.
@@ -91,3 +91,32 @@ Custom API does not support conditional block highlighting. Text labels carry he
 Automated tests should cover realistic state transitions and failure modes: healthy membership, missing/degraded/rebuilding states, unknown formats, invalid identities, APFS ancestry ambiguity, collection timeouts, stale data, authentication, HTTP routing and configuration privacy. Synthetic fixtures must never contain a user's real device identity or token.
 
 On a real Mac, verify `/readyz`, compare the API with read-only diskutil output, check the actual dashboard, and exercise helper stop/start independently of storage. Do not disconnect a healthy member or trigger a rebuild merely to test the UI. Rebuild parsing fixtures do not prove every macOS version reports progress identically.
+
+## Optional eject boundary (0.3.0)
+
+The operator requested a deliberate normal/force eject API. Reuse Apple's
+`diskutil unmountDisk [force]` and `eject [force]` in the existing user process;
+no new daemon or privileged helper is needed. A virtual RAID eject is not assumed
+to release every physical member. The supported workflow unmounts the complete
+logical RAID, verifies all related APFS volumes unmounted, then ejects each
+validated physical member and verifies both are absent. Its sequential partial
+failure is explicit; no automatic force fallback, disk removal, repair or retry
+is admitted.
+
+Fresh UUID/member/partition/APFS identity checks allow only a healthy two-member
+Mirror, no spare, with dedicated external physical GPT disks. Each member disk
+may contain its own EFI and the Apple_Boot helper explicitly referenced by that
+member; any unrelated partition is refused. APFS roles are limited to ordinary
+volumes or Backup; boot/system volumes, locked volumes and crypto migration are
+excluded. The preserved physical identity plan is rechecked before each ejection;
+the second member is never selected by reinterpreting a now-degraded set. Native
+mount checks follow unmount and precede every member eject.
+
+A separate control allowlist/token and Bearer-only POST leave existing clients
+read-only. A shared operation lock serializes preflight/action with collection.
+The private intent/result journal refuses duplicate request IDs for 24 hours and
+retains unresolved operations indefinitely. A timeout remains unknown even if
+the CLI process is killed, because kernel storage work may outlive it. A stopped
+host-side acknowledgement after inspection is the only way to clear uncertainty.
+The API contract documents bounded body parsing, output discard, returned outcomes
+and the absence of a claim that two physical ejections are atomic.

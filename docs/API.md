@@ -15,7 +15,7 @@ Use `Authorization: Bearer TOKEN`. HTTP Basic authentication with username `stat
 | `GET /` | Required | Minimal status page. |
 | `GET /status.js` | Required | Status-page script. |
 
-`HEAD` has GET semantics without a response body. `POST`, `PUT`, `PATCH`, `DELETE`, and `OPTIONS` return `405`. Query strings and absolute-form URLs are rejected. Unauthenticated protected requests return `401`; unknown routes return `404` after authentication. There is no CORS configuration or write endpoint.
+`HEAD` has GET semantics without a response body. `PUT`, `PATCH`, `DELETE`, and `OPTIONS` return `405`. `POST` also returns `405` unless the separately authorized optional eject capability is enabled. Query strings and absolute-form URLs are rejected. Unauthenticated protected requests return `401`; unknown routes return `404` after authentication. There is no CORS configuration. Optional control routes are documented below and never use monitoring authority.
 
 Responses include `Cache-Control: no-store`. This prevents browser/proxy caching; the service itself still returns its shared observation cache.
 
@@ -90,7 +90,7 @@ Abbreviated synthetic per-set response; omitted fields remain part of the docume
 ```json
 {
   "schema_version": 1,
-  "version": "0.2.1",
+  "version": "0.3.0",
   "collected_at": "2026-01-01T12:00:00Z",
   "attempted_at": "2026-01-01T11:59:59Z",
   "collection_ok": true,
@@ -144,3 +144,93 @@ launcher's `status` command reports saved/native startup intent and job state;
 `check` additionally verifies live readiness. See [service lifecycle](lifecycle.md).
 
 HTTP serving allows up to eight concurrent handlers, each with a three-second socket timeout. Excess connections are closed. These bounds keep the small private interface responsive; they are not a substitute for a reverse proxy when exposing it to untrusted networks.
+
+## Optional eject controls
+
+Controls are absent/disabled by default. The stopped local enable command adds
+this optional top-level configuration member without changing the monitoring
+token or existing observations:
+
+```json
+{"controls":{"enabled":true,"raids":["11111111-1111-4111-8111-111111111111"]}}
+```
+
+At most eight unique UUIDs are admitted. `expected_raids` is disappearance
+monitoring, never a control allowlist. The sibling mode-0600 `control-token` must
+be a distinct 32–256-character URL-safe secret. Monitoring Bearer/Basic tokens
+cannot control storage; the control token cannot read ordinary monitoring routes.
+No root execution or automatic privilege elevation is supported.
+
+| Route | Authority | Result |
+| --- | --- | --- |
+| `GET /api/v1/raids/UUID/eject` | Monitoring token | Fresh, read-only eligibility check when controls are enabled. Returns `eligible`, a bounded `reason`, and, when eligible, `members`, `volumes`, `force_supported`. This never reserves or ejects storage; POST repeats all checks. Disabled installations return `404`. |
+| `POST /api/v1/raids/UUID/eject` | Separate control Bearer token | One explicitly confirmed normal or forced eject. Disabled installations return `405`. |
+
+POST requires `Content-Type: application/json`, one bounded Content-Length
+(1–1024 bytes), and an `Idempotency-Key` containing a canonical hyphenated UUID.
+UUIDs are case-insensitive and normalized internally. The body must have exactly
+these two keys; the confirmation UUID must match the path:
+
+```json
+{"force":false,"confirm":"11111111-1111-4111-8111-111111111111"}
+```
+
+`force:true` is the separate force-eject choice. It never follows automatically
+from a failed normal request and never bypasses health or topology guards.
+Browser Basic credentials, Origin/Fetch Metadata headers, transfer encoding,
+forms, duplicate JSON keys/headers and extra fields are refused. There is no
+CORS, GET side effect, arbitrary command, device path or mount-point input.
+A trusted dashboard backend sends the POST after its own explicit confirmation;
+never expose the control token to its browser.
+
+Preflight resolves the UUID afresh, requires a healthy Online Mirror with exactly
+two online members and no spares, rejects rebuilding/resync/unknown states, and
+verifies external physical GPT ancestry, member UUIDs, partition UUIDs and the
+single APFS physical store. Only the exact RAID member, one EFI partition and an
+optional member-referenced Apple_Boot helper are allowed on each physical disk.
+APFS volume roles must be empty or Backup; system/boot/locked/migrating volumes
+are excluded. Cached monitoring results do not grant eligibility.
+
+Execution unmounts the logical RAID (forcing only when explicitly requested),
+verifies every linked APFS volume is unmounted, then ejects each exact verified
+physical member. Identity and mount state are rechecked before each eject; both
+physical disks and the RAID set must be absent for success. It does not remove
+members from the RAID metadata, erase disks or promise an atomic two-disk eject.
+Concurrent control or collection causes a busy refusal or serialized collection;
+monitoring HTTP still reads its cache. Native CLI output is discarded and capped
+at 64 KiB, each action at 65 seconds and the operation at 150 seconds. Clients
+should allow at least 180 seconds and treat a lost response as unknown.
+
+| HTTP | `outcome` | Meaning |
+| --- | --- | --- |
+| `200` | `ejected` | Both members verified absent; `members_ejected:2`, `safe_to_disconnect:true`. |
+| `409` | `refused` | Guard/busy/duplicate rejection, or native unmount refused with unchanged verified topology. No member eject is attempted for a failed unmount. A failed unmount may have unmounted some volumes. |
+| `503` | `partial` | At least one member was verified ejected before failure; `inspection_required:true`, `safe_to_disconnect:false`. |
+| `503` | `unknown` | An attempted operation could not be verified, including timeout; inspect on the host. Killing diskutil cannot guarantee cancellation of kernel work. |
+
+Responses contain bounded reason codes and an `operation_id` when applicable;
+raw errors, disk paths and credentials are not returned. Common refusal reasons
+are `controls_disabled`, `raid_not_allowed`, `root_forbidden`, `operation_busy`,
+`duplicate_request`, `inspection_required`, `rebuild_in_progress`,
+`raid_not_healthy`, `unsupported_topology`, `unrelated_partitions`,
+`identity_changed`, `preflight_unavailable` and `unmount_refused`.
+
+The private `control-state.json` intent/result journal is fsynced before the
+first native mutation. Completed request IDs remain rejected for 24 hours;
+unresolved started/partial/unknown operations never expire. At most 128 retained
+records are permitted; exhaustion refuses another operation. Do not resend an
+uncertain POST or generate new IDs to bypass uncertainty. Restart, preparation,
+disable and uninstall preserve this journal. After inspection, the stopped local
+`controls-clear --confirm UUID` acknowledges uncertainty without operating on
+storage; it retains recorded request IDs. See the lifecycle instructions.
+
+The advertised `force_supported` flag means this helper accepts the explicit
+force action for an eligible layout; it is not proof of native permission or
+successful ejection. The command syntax was reviewed against the installed
+macOS 27.0.1 `diskutil` manual. Other macOS versions and actual ejection need
+separate disposable-media acceptance; unsupported native behavior fails closed.
+Separate diskutil reads and mutations have an unavoidable interval between them:
+another local administrator or physical hotplug can change storage in that gap.
+The final state check minimizes this interval but cannot make it atomic. The
+operation lock covers this one installed service process; manually running
+additional control instances is outside the supported deployment.

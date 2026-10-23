@@ -20,7 +20,7 @@ import time
 import urllib.request
 import uuid
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 LABEL = "io.github.mglaeser.apple-raid-status"
 DEFAULT_STATE = Path.home() / "Library/Application Support/apple-raid-status"
 LOCK_DIR = Path.home() / "Library/Application Support/apple-raid-status-lifecycle"
@@ -644,6 +644,60 @@ def uninstall(state):
     print(json.dumps({"uninstalled": True, "retained_state": str(state)}))
 
 
+def configure_controls(state, action, allowed=None, confirm=None):
+    """Explicit stopped policy/credential maintenance; never a disk operation."""
+    expected_program(state)
+    if validate_job(state) is not None or read_definition(state).get("Disabled") is not True:
+        raise ValueError("stop helper before changing controls")
+    if disabled_override() is False:
+        raise ValueError("native startup intent must be disabled before changing controls")
+    module = collector_module(state / "app/apple_raid_status.py")
+    if not hasattr(module, "EjectControls"):
+        raise ValueError("install the reviewed control-capable release first")
+    config, monitoring = module.load_config(state / "config.json", require_control=action == "controls-enable")
+    before = private_file(state / "config.json")
+    if action == "controls-enable":
+        if not allowed:
+            raise ValueError("controls-enable requires --allow-eject UUID")
+        policy = {"enabled": True, "raids": [module.control_uuid(value) for value in allowed]}
+        module.control_policy({"controls": policy})
+        secret = state / "control-token"
+        if secret.exists() or secret.is_symlink():
+            file_info(secret)
+            token = private_file(secret).strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", token) or token == monitoring:
+                raise ValueError("invalid distinct control token")
+        else:
+            atomic_private(secret, (secrets.token_urlsafe(48) + "\n").encode())
+        config["controls"] = policy
+    elif action == "controls-disable":
+        config.pop("controls", None)  # Retain token and uncertain-action evidence.
+    elif action == "controls-clear":
+        if confirm is None:
+            raise ValueError("controls-clear requires --confirm UUID after physical inspection")
+        raid_uuid = module.control_uuid(confirm)
+        controls = module.EjectControls(config, None, state, __import__("threading").Lock())
+        data = controls._load()
+        # Preserve completed request IDs, including those associated with an
+        # uncertain operation. Clearing acknowledges it; it does not retry it.
+        for record in data["requests"]:
+            if record["raid"] == raid_uuid and record["state"] != "finished":
+                record["state"] = "finished"
+                if record["outcome"] is None:
+                    record["outcome"] = "unknown"
+        controls._save(data)
+        print(json.dumps({"controls_cleared": True, "storage_changed": False}))
+        return
+    else:
+        raise ValueError("invalid controls action")
+    if private_file(state / "config.json") != before:
+        raise ValueError("configuration changed during control update")
+    atomic_private(state / "config.json", (json.dumps(config, indent=2) + "\n").encode())
+    module.load_config(state / "config.json")
+    print(json.dumps({"controls_enabled": action == "controls-enable", "storage_changed": False,
+                      "monitoring_token_preserved": True}))
+
+
 def serve(state):
     expected_program(state, require_runtime=True)
     snapshot = validate_job(state)
@@ -661,12 +715,14 @@ def serve(state):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("install", "start", "stop", "restart", "status", "check", "uninstall", "serve"))
+    parser.add_argument("action", choices=("install", "start", "stop", "restart", "status", "check", "uninstall", "serve", "controls-enable", "controls-disable", "controls-clear"))
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
     parser.add_argument("--launcher", type=Path, help="absolute friendly executable path; install only")
     parser.add_argument("--bind", help="IPv4 address; new installation default 127.0.0.1")
     parser.add_argument("--port", type=int, help="new installation default 8788")
     parser.add_argument("--expect", action="append", help="expected RAID UUID; repeat for multiple sets")
+    parser.add_argument("--allow-eject", action="append", help="explicit control RAID UUID; controls-enable only")
+    parser.add_argument("--confirm", help="inspected RAID UUID; controls-clear only")
     args = parser.parse_args()
     if sys.platform != "darwin" or os.getuid() == 0:
         parser.error("run as your ordinary macOS user, without sudo")
@@ -674,6 +730,10 @@ def main():
         parser.error("Python 3.10 or newer required")
     if args.action != "install" and any(v is not None for v in (args.launcher, args.bind, args.port, args.expect)):
         parser.error("--launcher, --bind, --port, and --expect apply only to install")
+    if args.allow_eject is not None and args.action != "controls-enable":
+        parser.error("--allow-eject applies only to controls-enable")
+    if args.confirm is not None and args.action != "controls-clear":
+        parser.error("--confirm applies only to controls-clear")
     state = args.state_dir.expanduser().absolute()
     if args.action in ("status", "check", "serve"):
         checked_directory(state, private=True, create=False)
@@ -686,7 +746,9 @@ def main():
                 install(state, args)
             else:
                 checked_directory(state, private=True, create=False)
-                if args.action == "start":
+                if args.action.startswith("controls-"):
+                    configure_controls(state, args.action, args.allow_eject, args.confirm)
+                elif args.action == "start":
                     start(state)
                 elif args.action == "restart":
                     stop(state)

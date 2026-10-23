@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only AppleRAID observations over HTTP. Python standard library only."""
+"""AppleRAID observations with separately authorized optional eject controls."""
 
 import argparse
 import base64
@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 import uuid
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 DISK = re.compile(r"disk\d+(?:s\d+)*\Z")
 PROGRESS = re.compile(r"(\d+(?:\.\d+)?)%\s*\((?:Rebuilding|Resyncing)\)\Z", re.I)
 LOG = logging.getLogger("apple-raid-status")
@@ -227,18 +227,464 @@ def collect(expected=(), timeout=10, run=None):
     return raids
 
 
+# Controls are a separately authorized, opt-in boundary. Monitoring credentials
+# and cached observations never authorize an operation.
+class ControlRefusal(Exception):
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__(reason)
+
+
+def control_require(condition, reason="unsupported_topology"):
+    if not condition:
+        raise ControlRefusal(reason)
+
+
+def control_uuid(value):
+    parsed = identifier(value)
+    if not isinstance(value, str) or value.lower() != parsed.lower():
+        raise ValueError("expected canonical UUID")
+    return parsed
+
+
+def strict_json(data):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+    return json.loads(data, object_pairs_hook=pairs)
+
+
+def control_policy(config):
+    policy = config.get("controls", {"enabled": False, "raids": []})
+    if (not isinstance(policy, dict) or set(policy) != {"enabled", "raids"}
+            or type(policy["enabled"]) is not bool or not isinstance(policy["raids"], list)
+            or len(policy["raids"]) > 8):
+        raise ValueError("invalid controls policy")
+    ids = [identifier(value) for value in policy["raids"]]
+    if len(ids) != len(set(ids)) or (policy["enabled"] and not ids) or (not policy["enabled"] and ids):
+        raise ValueError("invalid control RAID allowlist")
+    return {"enabled": policy["enabled"], "raids": ids}
+
+
+def load_control_token(path, config, monitoring_token):
+    if not control_policy(config)["enabled"]:
+        return None
+    secret = Path(path).parent / "control-token"
+    token = private_file(secret).strip()
+    if secret.stat().st_nlink != 1:
+        raise ValueError("control token has multiple links")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", token) or hmac.compare_digest(token, monitoring_token):
+        raise ValueError("control token must be distinct from monitoring token")
+    return token
+
+
+def action_command(arguments, timeout=65):
+    """Fixed argv only; discard bounded output, never parse localized messages.
+
+    A timeout/overrun means unknown native outcome even after killing diskutil.
+    Kernel storage work can outlive its CLI process.
+    """
+    import selectors
+    command = list(arguments)
+    if (len(command) not in (2, 3) or command[0] not in ("unmountDisk", "eject")
+            or (len(command) == 3 and command[1] != "force") or not DISK.fullmatch(command[-1])):
+        raise ValueError("invalid storage action")
+    process = subprocess.Popen(["/usr/sbin/diskutil", *command], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True,
+                               env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"})
+    deadline, size = time.monotonic() + timeout, 0
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired("storage action", timeout)
+            for key, _ in selector.select(min(remaining, 0.2)):
+                chunk = os.read(key.fd, 8192)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                size += len(chunk)
+                if size > 65536:
+                    raise RuntimeError("storage action output exceeded limit")
+        return process.wait(timeout=max(0.01, deadline - time.monotonic()))
+    finally:
+        selector.close()
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass  # Kernel work may remain; caller receives unknown outcome.
+        process.stdout.close()
+
+
+def control_info(run, bsd):
+    control_require(isinstance(bsd, str) and DISK.fullmatch(bsd))
+    data = run(["info", "-plist", bsd])
+    control_require(data.get("DeviceIdentifier") == bsd, "identity_changed")
+    return data
+
+
+def control_external(info):
+    control_require(info.get("Internal") is False and info.get("OSInternalMedia") is False
+                    and info.get("SystemImage") is False and info.get("Ejectable") is True)
+
+
+def member_plan(run, raw, raid_uuid):
+    bsd, member_uuid = device(raw.get("BSD Name")), identifier(raw["AppleRAIDMemberUUID"])
+    info = control_info(run, bsd)
+    control_external(info)
+    control_require(info.get("WholeDisk") is False and info.get("RAIDSlice") is True
+                    and info.get("RAIDMaster") is False and info.get("Content") == "Apple_RAID"
+                    and identifier(info.get("RAIDSetUUID")) == raid_uuid
+                    and identifier(info.get("RAIDMemberUUID")) == member_uuid
+                    and info.get("RAIDMemberStatus") == "Online"
+                    and info.get("RAIDSetStatus") in ("Online", "Degraded")
+                    and info.get("RAIDSetLevelType") == "Mirror"
+                    and not info.get("MountPoint"))
+    whole = info.get("ParentWholeDisk")
+    control_require(isinstance(whole, str) and re.fullmatch(r"disk\d+", whole))
+    physical = control_info(run, whole)
+    control_external(physical)
+    control_require(physical.get("WholeDisk") is True and physical.get("VirtualOrPhysical") == "Physical"
+                    and physical.get("RAIDSlice") is False and physical.get("RAIDMaster") is False
+                    and physical.get("Content") == "GUID_partition_scheme" and not physical.get("MountPoint"))
+    tree = bounded_text(physical.get("DeviceTreePath"), "device tree")
+    size = natural(physical.get("TotalSize"))
+    control_require(size is not None and size > 0)
+    disks = run(["list", "-plist", whole]).get("AllDisksAndPartitions")
+    control_require(isinstance(disks, list) and len(disks) == 1
+                    and disks[0].get("DeviceIdentifier") == whole
+                    and disks[0].get("Content") == "GUID_partition_scheme")
+    partitions = disks[0].get("Partitions")
+    control_require(isinstance(partitions, list) and 2 <= len(partitions) <= 3)
+    seen, identities, efi, boot, member = set(), [], 0, 0, 0
+    for part in partitions:
+        part_device = part.get("DeviceIdentifier")
+        control_require(part_device not in seen)
+        seen.add(part_device)
+        detail = control_info(run, part_device)
+        control_external(detail)
+        content = part.get("Content")
+        control_require(detail.get("ParentWholeDisk") == whole and detail.get("WholeDisk") is False
+                        and detail.get("Content") == content and not detail.get("MountPoint"))
+        partition_uuid = identifier(part.get("DiskUUID"))
+        control_require(identifier(detail.get("DiskUUID")) == partition_uuid, "identity_changed")
+        if part_device == bsd and content == "Apple_RAID":
+            member += 1
+        elif content == "EFI" and detail.get("RAIDSlice") is False:
+            efi += 1
+        elif (content == "Apple_Boot" and part_device == info.get("BooterDeviceIdentifier")
+              and detail.get("RAIDSlice") is False):
+            boot += 1
+        else:
+            raise ControlRefusal("unrelated_partitions")
+        identities.append((part_device, partition_uuid, content))
+    control_require(member == 1 and efi == 1 and boot <= 1
+                    and (not info.get("BooterDeviceIdentifier") or boot == 1))
+    return {"device": whole, "member_device": bsd, "member_uuid": member_uuid,
+            "tree": tree, "size": size, "partitions": sorted(identities)}
+
+
+def eject_plan(run, raid_uuid):
+    sets = run(["appleRAID", "list", "-plist"]).get("AppleRAIDSets")
+    control_require(isinstance(sets, list) and len(sets) <= 64)
+    matches = [item for item in sets if identifier(item.get("AppleRAIDSetUUID")) == raid_uuid]
+    control_require(len(matches) == 1, "raid_not_found")
+    raw = matches[0]
+    raid = normalize_raid(raw)
+    control_require(not raid["rebuilding"], "rebuild_in_progress")
+    control_require(raid["type"] == "Mirror" and raid["status"] == "Online" and raid["healthy"]
+                    and len(raid["members"]) == 2 and not raid["spares"], "raid_not_healthy")
+    logical = control_info(run, raid["device"])
+    control_external(logical)
+    control_require(logical.get("RAIDMaster") is True and identifier(logical.get("RAIDSetUUID")) == raid_uuid)
+    members = [member_plan(run, item, raid_uuid) for item in raw["Members"]]
+    control_require(len({m["device"] for m in members}) == 2)
+    all_member_devices = {m["member_device"] for m in members}
+    for other in sets:
+        if identifier(other.get("AppleRAIDSetUUID")) != raid_uuid:
+            control_require(not any(item.get("BSD Name") in all_member_devices
+                                    for item in other.get("Members", []) + other.get("Spares", [])))
+    containers = run(["apfs", "list", "-plist"]).get("Containers")
+    control_require(isinstance(containers, list))
+    matches = [item for item in containers if any(store.get("DeviceIdentifier") == raid["device"]
+                                                for store in item.get("PhysicalStores", []))]
+    control_require(len(matches) == 1 and len(matches[0].get("PhysicalStores", [])) == 1)
+    container = matches[0]
+    container_uuid = identifier(container.get("APFSContainerUUID"))
+    volumes = container.get("Volumes")
+    control_require(isinstance(volumes, list) and 1 <= len(volumes) <= 16)
+    volume_plan = []
+    for volume in volumes:
+        # Bootable/system volumes are excluded. Backup is the only admitted role.
+        roles = volume.get("Roles")
+        control_require(isinstance(roles, list) and roles in ([], ["Backup"]))
+        control_require(volume.get("CryptoMigrationOn") is False and volume.get("Locked") is False)
+        info = control_info(run, volume.get("DeviceIdentifier"))
+        control_external(info)
+        control_require(info.get("APFSContainerReference") == container.get("ContainerReference")
+                        and identifier(info.get("VolumeUUID")) == identifier(volume.get("APFSVolumeUUID")))
+        volume_plan.append({"device": volume["DeviceIdentifier"], "uuid": identifier(volume.get("APFSVolumeUUID")),
+                            "roles": roles})
+    control_require(len({v["uuid"] for v in volume_plan}) == len(volume_plan))
+    # Last read checks that identities/status did not move while assembling the plan.
+    current = run(["appleRAID", "list", "-plist"]).get("AppleRAIDSets", [])
+    current = [item for item in current if identifier(item.get("AppleRAIDSetUUID")) == raid_uuid]
+    control_require(len(current) == 1 and normalize_raid(current[0]) == raid, "identity_changed")
+    return {"uuid": raid_uuid, "device": raid["device"], "container_uuid": container_uuid,
+            "container": container["ContainerReference"], "volumes": volume_plan,
+            "members": sorted(members, key=lambda m: m["device"])}
+
+
+def verify_eject_state(run, plan, ejected):
+    """Rebuilds are independent of filesystem mounts; check at each boundary."""
+    sets = run(["appleRAID", "list", "-plist"]).get("AppleRAIDSets")
+    control_require(isinstance(sets, list) and len(sets) <= 64, "verification_unavailable")
+    expected = {m["member_uuid"]: m for m in plan["members"]}
+    matching = []
+    for raw in sets:
+        current_uuid = identifier(raw.get("AppleRAIDSetUUID"))
+        if current_uuid == plan["uuid"]:
+            matching.append(raw)
+        else:
+            control_require(not any(identifier(m.get("AppleRAIDMemberUUID")) in expected
+                                    for m in raw.get("Members", []) + raw.get("Spares", [])), "identity_changed")
+    # The virtual set may disappear as physical members are ejected. It may not
+    # disappear before the first physical operation or be replaced/reinterpreted.
+    if not matching:
+        control_require(ejected > 0, "identity_changed")
+        return
+    control_require(len(matching) == 1, "identity_changed")
+    current = normalize_raid(matching[0])
+    control_require(not current["rebuilding"], "rebuild_in_progress")
+    control_require(current["type"] == "Mirror" and not current["spares"]
+                    and {m["uuid"] for m in current["members"]} == set(expected), "identity_changed")
+    if ejected == 0:
+        control_require(current["healthy"] and current["device"] == plan["device"], "raid_not_healthy")
+    else:
+        control_require(current["status"] in ("Online", "Degraded"), "raid_not_healthy")
+    remaining = {m["member_uuid"] for m in plan["members"][ejected:]}
+    for member in current["members"]:
+        if member["uuid"] in remaining:
+            control_require(member["device"] == expected[member["uuid"]]["member_device"]
+                            and member["health"] == "healthy", "identity_changed")
+
+
+def verify_unmounted(run, plan, allow_missing=False):
+    containers = run(["apfs", "list", "-plist"]).get("Containers")
+    control_require(isinstance(containers, list))
+    matching = [c for c in containers if identifier(c.get("APFSContainerUUID")) == plan["container_uuid"]]
+    if allow_missing and not matching:
+        return
+    control_require(len(matching) == 1, "identity_changed")
+    container = matching[0]
+    control_require(container.get("ContainerReference") == plan["container"]
+                    and [s.get("DeviceIdentifier") for s in container.get("PhysicalStores", [])] == [plan["device"]],
+                    "identity_changed")
+    volumes = container.get("Volumes", [])
+    expected = {v["uuid"]: v for v in plan["volumes"]}
+    control_require({identifier(v.get("APFSVolumeUUID")) for v in volumes} == set(expected), "identity_changed")
+    for volume in volumes:
+        old = expected[identifier(volume.get("APFSVolumeUUID"))]
+        control_require(volume.get("DeviceIdentifier") == old["device"] and volume.get("Roles") == old["roles"],
+                        "identity_changed")
+        info = control_info(run, old["device"])
+        control_require(info.get("APFSContainerReference") == plan["container"]
+                        and identifier(info.get("VolumeUUID")) == old["uuid"], "identity_changed")
+        control_require(not info.get("MountPoint"), "volumes_still_mounted")
+
+
+class EjectControls:
+    def __init__(self, config, token, state_dir, lock, run=None, mutate=None):
+        self.policy, self.token = control_policy(config), token
+        self.state_dir, self.lock = Path(state_dir), lock
+        if any(p.is_symlink() for p in (self.state_dir, *self.state_dir.parents)):
+            raise ValueError("control state path contains symlinks")
+        info = self.state_dir.stat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("control state directory must be private and user-owned")
+        self.run = run or diskutil
+        self.mutate = mutate or action_command
+        self.journal = self.state_dir / "control-state.json"
+
+    def _load(self):
+        if not self.journal.exists() and not self.journal.is_symlink():
+            return {"schema_version": 1, "requests": []}
+        data = strict_json(private_file(self.journal))
+        if self.journal.stat().st_nlink != 1:
+            raise ValueError("control journal has multiple links")
+        if (not isinstance(data, dict) or set(data) != {"schema_version", "requests"}
+                or data["schema_version"] != 1 or not isinstance(data["requests"], list) or len(data["requests"]) > 128):
+            raise ValueError("invalid control journal")
+        for record in data["requests"]:
+            if (not isinstance(record, dict) or set(record) != {"id", "raid", "time", "state", "outcome"}
+                    or record["state"] not in ("started", "blocked", "finished")
+                    or type(record["time"]) not in (float, int) or not 0 < record["time"] < 2**53
+                    or record["outcome"] not in (None, "ejected", "refused", "partial", "unknown")):
+                raise ValueError("invalid control journal record")
+            identifier(record["id"]); identifier(record["raid"])
+        return data
+
+    def _save(self, data):
+        import tempfile
+        # Same-directory atomic private journal; never logs tokens or native output.
+        if self.journal.exists() or self.journal.is_symlink():
+            private_file(self.journal)
+        fd, temp = tempfile.mkstemp(prefix=".control-", dir=self.state_dir)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                json.dump(data, stream, separators=(",", ":"), allow_nan=False)
+                stream.flush(); os.fsync(stream.fileno())
+            os.replace(temp, self.journal)
+            directory = os.open(self.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            if os.path.exists(temp):
+                os.unlink(temp)
+
+    def _allowed(self, raid_uuid):
+        control_require(self.policy["enabled"] and self.token is not None, "controls_disabled")
+        control_require(raid_uuid in self.policy["raids"], "raid_not_allowed")
+        control_require(os.getuid() != 0, "root_forbidden")
+
+    def eligibility(self, raid_uuid):
+        if not self.lock.acquire(blocking=False):
+            return {"eligible": False, "reason": "operation_busy"}
+        try:
+            self._allowed(raid_uuid)
+            data = self._load()
+            control_require(not any(r["raid"] == raid_uuid and r["state"] != "finished" for r in data["requests"]),
+                            "inspection_required")
+            plan = self._plan(raid_uuid)
+            return {"eligible": True, "reason": None, "members": len(plan["members"]),
+                    "volumes": len(plan["volumes"]), "force_supported": True}
+        except ControlRefusal as error:
+            return {"eligible": False, "reason": error.reason}
+        except Exception:
+            return {"eligible": False, "reason": "preflight_unavailable"}
+        finally:
+            self.lock.release()
+
+    def _plan(self, raid_uuid):
+        deadline = time.monotonic() + 30
+        def bounded(args):
+            remaining = deadline - time.monotonic()
+            control_require(remaining > 0, "preflight_timeout")
+            result = diskutil(args, min(10, remaining)) if self.run is diskutil else self.run(args)
+            control_require(time.monotonic() < deadline, "preflight_timeout")
+            return result
+        return eject_plan(bounded, raid_uuid)
+
+    def eject(self, raid_uuid, force, request_id):
+        if not self.lock.acquire(blocking=False):
+            return 409, {"outcome": "refused", "reason": "operation_busy"}
+        record, data, stage, ejected = None, None, "preflight", 0
+        deadline = time.monotonic() + 150
+        def run(args):
+            remaining = deadline - time.monotonic()
+            control_require(remaining > 0, "operation_timeout")
+            result = diskutil(args, min(10, remaining)) if self.run is diskutil else self.run(args)
+            control_require(time.monotonic() < deadline, "operation_timeout")
+            return result
+        def mutate(args):
+            remaining = deadline - time.monotonic()
+            control_require(remaining > 0, "operation_timeout")
+            return action_command(args, min(65, remaining)) if self.mutate is action_command else self.mutate(args)
+        try:
+            self._allowed(raid_uuid)
+            data = self._load()
+            control_require(not any(r["id"] == request_id for r in data["requests"]), "duplicate_request")
+            control_require(not any(r["raid"] == raid_uuid and r["state"] != "finished" for r in data["requests"]),
+                            "inspection_required")
+            # Completed request keys expire after 24h; interrupted/partial actions never expire.
+            data["requests"] = [r for r in data["requests"] if r["state"] != "finished" or time.time()-r["time"] < 86400]
+            control_require(len(data["requests"]) < 128, "operation_history_full")
+            plan = self._plan(raid_uuid)
+            record = {"id": request_id, "raid": raid_uuid, "time": time.time(), "state": "started", "outcome": None}
+            data["requests"].append(record)
+            self._save(data)  # Durable intent precedes the first native mutation.
+            stage = "unmount"
+            code = mutate(["unmountDisk", *(["force"] if force else []), plan["device"]])
+            if code != 0:
+                # Partial volume unmount is possible. Only an unchanged complete
+                # fresh topology permits a new explicit attempt (including force).
+                control_require(self._plan(raid_uuid) == plan, "identity_changed")
+                record.update(state="finished", outcome="refused"); self._save(data)
+                LOG.info("eject operation refused at unmount (%s)", request_id)
+                return 409, {"outcome": "refused", "reason": "unmount_refused", "operation_id": request_id,
+                             "safe_to_disconnect": False, "members_ejected": 0}
+            verify_unmounted(run, plan)
+            for member in plan["members"]:
+                stage = "member_eject"
+                current = member_plan(run, {"BSD Name": member["member_device"],
+                                                "AppleRAIDMemberUUID": member["member_uuid"]}, raid_uuid)
+                control_require(current == member, "identity_changed")
+                verify_unmounted(run, plan, allow_missing=ejected > 0)
+                # Check storage state last: unmount and topology reads can take
+                # time, and a mirror can begin rebuilding without mounted files.
+                verify_eject_state(run, plan, ejected)
+                # Never re-resolve a degraded/reconstructed RAID after first eject:
+                # this is the preserved exact physical membership plan.
+                code = mutate(["eject", *(["force"] if force else []), member["device"]])
+                disks = run(["list", "-plist"]).get("AllDisks")
+                control_require(isinstance(disks, list), "verification_unavailable")
+                control_require(code == 0 and member["device"] not in disks, "member_eject_incomplete")
+                ejected += 1
+            stage = "verify"
+            disks = run(["list", "-plist"]).get("AllDisks")
+            control_require(isinstance(disks, list) and all(m["device"] not in disks for m in plan["members"]),
+                            "verification_unavailable")
+            sets = run(["appleRAID", "list", "-plist"]).get("AppleRAIDSets")
+            control_require(isinstance(sets, list) and not any(identifier(s.get("AppleRAIDSetUUID")) == raid_uuid for s in sets),
+                            "verification_unavailable")
+            record.update(state="finished", outcome="ejected"); self._save(data)
+            LOG.info("eject operation completed (%s)", request_id)
+            return 200, {"outcome": "ejected", "reason": None, "operation_id": request_id,
+                         "members_ejected": ejected, "safe_to_disconnect": True}
+        except Exception as error:
+            reason = error.reason if isinstance(error, ControlRefusal) else "native_outcome_unknown" if record else "preflight_unavailable"
+            outcome = "refused" if record is None else "partial" if ejected else "unknown"
+            if record:
+                record.update(state="blocked", outcome=outcome)
+                try:
+                    self._save(data)
+                except Exception:
+                    pass  # Durable started record already blocks future operations.
+            LOG.warning("eject operation %s at %s (%s)", outcome, stage, reason)
+            return (409 if record is None else 503), {"outcome": outcome, "reason": reason,
+                    "operation_id": request_id, "members_ejected": ejected, "safe_to_disconnect": False,
+                    "inspection_required": record is not None}
+        finally:
+            self.lock.release()
+
+
 class Cache:
     def __init__(self, config, probe=None, clock=time.monotonic):
         self.config, self.clock = config, clock
         self.probe = probe or (lambda: collect(config["expected_raids"], config["timeout_seconds"]))
         self.lock = threading.Lock()
+        self.operation_lock = threading.Lock()
         self.raids, self.collected_at, self.attempted_at = [], None, None
         self.monotonic_at, self.error = None, "collection_not_started"
 
     def refresh(self):
         attempted = timestamp()
         try:
-            raids = self.probe()
+            with self.operation_lock:
+                raids = self.probe()
         except Exception as exc:
             # Never publish subprocess stderr, paths, or raw host diagnostics.
             code = "command_timeout" if isinstance(exc, subprocess.TimeoutExpired) else "collection_failed"
@@ -291,10 +737,10 @@ def private_file(path):
     return path.read_text()
 
 
-def load_config(path):
-    config = json.loads(private_file(path))
+def load_config(path, require_control=True):
+    config = strict_json(private_file(path))
     keys = {"bind", "port", "interval_seconds", "timeout_seconds", "stale_after_seconds", "expected_raids"}
-    if not isinstance(config, dict) or set(config) != keys:
+    if not isinstance(config, dict) or set(config) not in (keys, keys | {"controls"}):
         raise ValueError("invalid configuration keys")
     address = ipaddress.ip_address(config["bind"])
     if address.version != 4:
@@ -308,9 +754,12 @@ def load_config(path):
     if not isinstance(config["expected_raids"], list) or len(config["expected_raids"]) > 64:
         raise ValueError("invalid expected RAID list")
     config["expected_raids"] = [identifier(v) for v in config["expected_raids"]]
+    control_policy(config)
     token = private_file(Path(path).parent / "token").strip()
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", token):
         raise ValueError("token must contain 32–256 URL-safe characters")
+    if require_control:
+        load_control_token(path, config, token)
     return config, token
 
 
@@ -326,8 +775,8 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, cache, token):
-        self.cache, self.token = cache, token
+    def __init__(self, address, cache, token, controls=None):
+        self.cache, self.token, self.controls = cache, token, controls
         self.slots = threading.BoundedSemaphore(8)
         super().__init__(address, Handler)
 
@@ -416,6 +865,12 @@ class Handler(BaseHTTPRequestHandler):
             data, _ = self.server.cache.snapshot()
             ready = data["collection_ok"] and not data["stale"]
             return self.respond(200 if route.path != "/readyz" or ready else 503, data)
+        action = re.fullmatch(r"/api/v1/raids/([A-Fa-f0-9-]{36})/eject", route.path)
+        if action and self.server.controls:
+            try:
+                return self.respond(200, self.server.controls.eligibility(identifier(action[1])))
+            except ValueError:
+                return self.respond(400, {"error": "invalid_uuid"})
         match = re.fullmatch(r"/api/v1/raids/([A-Fa-f0-9-]{36})", route.path)
         if match:
             try:
@@ -427,15 +882,54 @@ class Handler(BaseHTTPRequestHandler):
 
     do_HEAD = do_GET
 
-    def do_POST(self):
+    def read_only(self):
         self.respond(405, {"error": "read_only"})
 
-    do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_POST
+    def do_POST(self):
+        controls = self.server.controls
+        if controls is None:
+            return self.read_only()
+        auth = self.headers.get_all("Authorization", [])
+        if (len(auth) != 1 or not controls.token or not hmac.compare_digest(
+                auth[0].encode(), ("Bearer " + controls.token).encode())):
+            return self.respond(401, {"error": "control_unauthorized"})
+        # Browser Basic, cross-origin requests and forms never authorize eject.
+        if (self.headers.get("Origin") is not None or self.headers.get("Sec-Fetch-Site") is not None
+                or self.headers.get("Transfer-Encoding") is not None):
+            return self.respond(400, {"error": "invalid_control_request"})
+        match = re.fullmatch(r"/api/v1/raids/([A-Fa-f0-9-]{36})/eject", self.path)
+        if not match:
+            return self.respond(404, {"error": "not_found"})
+        try:
+            raid_uuid = control_uuid(match[1])
+            key = self.headers.get_all("Idempotency-Key", [])
+            if len(key) != 1:
+                raise ValueError("invalid request ID")
+            request_id = control_uuid(key[0])
+            length = self.headers.get_all("Content-Length", [])
+            if (len(length) != 1 or not re.fullmatch(r"[0-9]{1,4}", length[0])
+                    or not 1 <= int(length[0]) <= 1024
+                    or self.headers.get_all("Content-Type", []) != ["application/json"]):
+                raise ValueError("invalid body framing")
+            raw = self.rfile.read(int(length[0]))
+            if len(raw) != int(length[0]):
+                raise ValueError("incomplete body")
+            body = strict_json(raw)
+            if (not isinstance(body, dict) or set(body) != {"force", "confirm"}
+                    or type(body["force"]) is not bool or control_uuid(body["confirm"]) != raid_uuid):
+                raise ValueError("invalid confirmation")
+        except (ValueError, TypeError, AttributeError, socket.timeout):
+            return self.respond(400, {"error": "invalid_control_request"})
+        code, result = controls.eject(raid_uuid, body["force"], request_id)
+        self.respond(code, result)
+
+    do_PUT = do_DELETE = do_PATCH = do_OPTIONS = read_only
 
 
-def serve(config, token):
+def serve(config, token, control_token=None, state_dir=None):
     cache, stopped = Cache(config), threading.Event()
-    server = Server((config["bind"], config["port"]), cache, token)
+    controls = EjectControls(config, control_token, state_dir, cache.operation_lock) if control_token else None
+    server = Server((config["bind"], config["port"]), cache, token, controls)
 
     def poll():
         while not stopped.is_set():
@@ -483,7 +977,7 @@ def main():
     handler = RotatingFileHandler(log_path, maxBytes=262144, backupCount=1)
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     logging.getLogger().handlers = [handler]
-    serve(config, token)
+    serve(config, token, load_control_token(args.config, config, token), args.config.parent)
     return 0
 
 

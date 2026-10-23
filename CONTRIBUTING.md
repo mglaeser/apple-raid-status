@@ -13,11 +13,11 @@ python3 -m unittest discover -s tests -v
 python3 -m py_compile apple_raid_status.py install.py
 ```
 
-Portable tests run on Linux and macOS using synthetic fixtures and mocked command execution. They must not require a real RAID, run installer mutations on the CI host, or invoke repair/rebuild operations. Manual native collection is a separate macOS check with `python3 apple_raid_status.py --once`.
+Portable tests run on Linux and macOS using synthetic fixtures and mocked command execution. They must not require a real RAID, run installer mutations on the CI host, or invoke any native eject/unmount/repair/rebuild operations. Control execution tests use synthetic topology and mocked command execution; native ejection acceptance requires separate disposable media, never production RAID. Manual native collection is a separate macOS check with `python3 apple_raid_status.py --once`.
 
 ## Scope and code review
 
-- Preserve a small standard-library-only runtime and read-only API.
+- Preserve the small standard-library runtime and strictly read-only monitoring authority. Optional eject is a separate, disabled-by-default control boundary; no repair/format/mount/rebuild controls are admitted.
 - Keep subprocess commands fixed and arguments validated. Never execute request-supplied shell commands.
 - Parse plist, not localized display output, except for explicitly documented state text.
 - Do not turn unknown or stale observations into healthy results.

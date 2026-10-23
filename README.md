@@ -3,9 +3,9 @@
 [![Tests](https://github.com/mglaeser/apple-raid-status/actions/workflows/test.yml/badge.svg)](https://github.com/mglaeser/apple-raid-status/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A small, read-only HTTP service for macOS AppleRAID. See RAID state, member availability, capacity, and available rebuild progress in [Homepage](https://gethomepage.dev/) or any dashboard that consumes JSON.
+A small HTTP monitoring service for macOS AppleRAID, with optional separately authorized eject controls. See RAID state, member availability, capacity, and available rebuild progress in [Homepage](https://gethomepage.dev/) or any dashboard that consumes JSON.
 
-The collector runs **natively on the Mac that owns the RAID**. Homepage can run elsewhere, including in a container, and retrieve observations over HTTP. There are no Python package dependencies, database, cloud account, or privileged disk operations.
+The collector runs **natively on the Mac that owns the RAID**. Homepage can run elsewhere, including in a container, and retrieve observations over HTTP. There are no Python package dependencies, database, cloud account, root helper, or sudo rule.
 
 ```text
 macOS diskutil → cached AppleRAID observations → authenticated HTTP API
@@ -21,6 +21,7 @@ macOS diskutil → cached AppleRAID observations → authenticated HTTP API
 - Freshness timestamps, stale/error states, expected-RAID disappearance detection, and separate liveness/readiness endpoints.
 - Copy-and-paste configuration for Homepage's built-in **Custom API** widget. No custom Homepage build or plugin installation.
 - A minimal authenticated status page and a per-user `launchd` installer.
+- Optional normal/force eject for explicitly admitted healthy external two-member APFS mirrors; disabled by default and isolated from monitoring credentials.
 
 This reports the operating system's observations. It does **not** provide SMART attributes, temperatures, filesystem verification, backup verification, history, alerts, repair controls, or a rebuild ETA. An online RAID is not proof that every disk or file is healthy.
 
@@ -40,7 +41,7 @@ In the initial Apple Silicon deployment, the helper used **14–16 MiB resident 
 Download the tagged source using Git:
 
 ```sh
-git clone --branch v0.2.1 --depth 1 https://github.com/mglaeser/apple-raid-status.git
+git clone --branch v0.3.0 --depth 1 https://github.com/mglaeser/apple-raid-status.git
 cd apple-raid-status
 python3 apple_raid_status.py --once
 ```
@@ -119,13 +120,30 @@ For a site-specific display name, choose the full user-owned executable path wit
 
 `python3 install.py uninstall` stops the helper and removes its owned LaunchAgent and launcher while retaining private configuration, token, installed source and logs. Use the chosen `--state-dir` when customized. Remove retained state manually only when it is no longer needed.
 
-Defaults are a **30-second polling interval**, a **10-second timeout per diskutil command**, and a **90-second stale threshold**. Collection also has a **30-second overall deadline**. Requests read cached data and do not trigger additional disk probes. Collection and HTTP serving are separate, so a slow probe does not block the API.
+Defaults are a **30-second polling interval**, a **10-second timeout per diskutil command**, and a **90-second stale threshold**. Collection also has a **30-second overall deadline**. Monitoring requests read cached data and do not trigger additional disk probes. Optional eject eligibility/action requests perform fresh, bounded checks and serialize with collection. Collection and HTTP serving are separate, so a slow probe does not block the API.
 
 Configuration is `config.json`, and the API secret is `token`, in the state directory. Both must be owned by the service user with mode `0600`; symlinked private paths are rejected. See [configuration and API reference](docs/API.md) before editing. Restart after configuration changes.
 
 Collector diagnostics are in `collector.log` in the same directory, rotated at 256 KiB with one backup. Launch-time errors go to `service.log`. The installer records the Python interpreter and installed-source checksums in `receipt.json`. If a Python upgrade removes that interpreter, stop the old service and reinstall with a supported `python3` before starting the helper.
 
 To upgrade, stop the service using its installed launcher, obtain a reviewed release, and rerun that release's `python3 install.py install` using the same `--state-dir` if customized. Omit bind/port/expected-set options to preserve the existing settings. Explicitly start it when intended, then run `check` and verify the dashboard. **Upgrading from 0.1.0 needs the documented legacy stop step:** that release had no installed launcher and its stop did not persist across login. Follow [the migration instructions](docs/lifecycle.md#upgrading-from-010). There is no automatic update or rollback service.
+
+## Optional eject controls
+
+Monitoring credentials always remain read-only. Eject requires a separate private
+control token and an explicit RAID UUID allowlist, enabled through the stopped
+local lifecycle workflow. The implementation supports a narrow external APFS
+mirror layout; active rebuilds, degraded/unknown state and ambiguous or shared
+topology are refused even for force eject.
+
+A normal request unmounts all related APFS volumes, then ejects the two verified
+physical disks. Force is a distinct deliberate request, never an automatic retry;
+it can discard unsaved work from open files. Member ejection is sequential and
+cannot be atomic. Timeout or partial completion requires host inspection before
+another operation. API callers must use a unique request ID and inspect the
+reported outcome; a lost connection is not success. See the
+[eject contract](docs/API.md#optional-eject-controls) and
+[local enable/disable workflow](docs/lifecycle.md#optional-control-policy).
 
 ## Documentation and development
 

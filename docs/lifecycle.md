@@ -2,8 +2,8 @@
 
 One user LaunchAgent owns this service. It uses the stable label
 `io.github.mglaeser.apple-raid-status`, a private installation receipt and a named
-executable. The HTTP interface remains read-only; lifecycle controls are local
-commands, not remote API endpoints.
+executable. Monitoring authority remains read-only; service lifecycle controls are local
+commands, not remote API endpoints. Optional storage eject is separately enabled.
 
 ## Command contract
 
@@ -119,3 +119,50 @@ Use the same custom state directory throughout. If any ownership, source or
 native-state check fails, retain the diagnostic evidence and correct the exact
 discrepancy before continuing. Do not overwrite an unrecognized LaunchAgent or
 stop unrelated services as part of this migration.
+
+## Optional control policy
+
+Install the reviewed 0.3.0 release through the existing stopped update workflow.
+Ordinary install never enables controls, changes their allowlist, rotates either
+token or clears an unresolved operation. The following exact commands only
+change private policy/credentials; none calls diskutil or changes storage.
+Replace the example UUID with the deliberately selected set identity.
+
+**Run on:** the Mac owning the RAID — **as:** its ordinary installing user.
+
+```sh
+python3 install.py stop
+python3 install.py controls-enable --allow-eject 11111111-1111-4111-8111-111111111111
+python3 install.py start
+```
+
+Use the same `--state-dir` on every command when customized. Repeat
+`--allow-eject` for up to eight explicitly admitted UUIDs. Enabling requires the
+exact job unloaded and durable disabled intent. It creates a new private
+`control-token` only when missing and refuses a token equal to the monitoring
+secret. Repeating enable preserves the token but deliberately replaces the
+allowlist. It never starts the helper automatically. Share this control token
+only with an authorized backend; Homepage's existing token stays read-only.
+
+Disable through explicit stop, `controls-disable`, then optional start. Disable
+removes the optional policy but preserves both credentials and operation history.
+Uninstall likewise retains them, including unresolved uncertainty.
+
+An interrupted/partial/unknown eject is blocked after restart. First inspect the
+native RAID/mount/member state on the host and resolve any ongoing storage work.
+Only then acknowledge that inspection using the exact UUID:
+
+**Run on:** the Mac owning the RAID — **as:** its ordinary installing user.
+
+```sh
+python3 install.py stop
+python3 install.py controls-clear --confirm 11111111-1111-4111-8111-111111111111
+python3 install.py start
+```
+
+Acknowledgement retains request IDs and does not retry an action, mount storage,
+change membership, or certify safe disconnection. A future POST repeats fresh
+eligibility checks and needs a new request ID. Do not edit/delete the journal to
+bypass uncertainty. The next regular collector sample reports intentionally
+ejected storage as missing; ejection does not rewrite health thresholds or hide
+an expected RAID.

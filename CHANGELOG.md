@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-10-23
+
+- Add disabled-by-default normal/force eject for explicitly admitted healthy external two-member APFS mirrors, using a separate control credential and exact UUID confirmation.
+- Resolve fresh complete membership/topology, refuse rebuilds and unsupported storage, unmount all related volumes, verify each exact physical member and report partial/unknown results without automatic retry.
+- Serialize control with collection; persist bounded request/uncertainty state and provide stopped local enable/disable/inspection acknowledgement commands that preserve monitoring credentials.
+- Preserve the version-1 monitoring schema, routes and read-only token authority. Native mutation behavior is fixture-tested; production storage is never ejected as a deployment test.
+
 ## 0.2.1 — 2026-10-22
 
 - Report Mirror rebuild percentages from valid native `MemberRebuildStatus` byte counters and RAID capacity when no explicit percentage is present.
