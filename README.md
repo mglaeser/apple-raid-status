@@ -41,7 +41,7 @@ In the initial Apple Silicon deployment, the helper used **14–16 MiB resident 
 Download the tagged source using Git:
 
 ```sh
-git clone --branch v0.3.0 --depth 1 https://github.com/mglaeser/apple-raid-status.git
+git clone --branch v0.3.1 --depth 1 https://github.com/mglaeser/apple-raid-status.git
 cd apple-raid-status
 python3 apple_raid_status.py --once
 ```

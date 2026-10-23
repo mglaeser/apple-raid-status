@@ -58,8 +58,9 @@ class Storage:
                 if content == "Apple_RAID":
                     self.info[bsd].update(RAIDSlice=True, RAIDSetUUID=RAID, RAIDMemberUUID=member,
                                           RAIDMemberStatus="Online", RAIDSetStatus="Online", RAIDSetLevelType="Mirror",
-                                          BooterDeviceIdentifier=f"disk{n}s3")
-            self.layouts[whole] = {"DeviceIdentifier": whole, "Content": "GUID_partition_scheme", "Partitions": partitions}
+                                          BooterDeviceIdentifier=f"disk{n}s3", DeviceTreePath=f"/synthetic/usb/{n}/member")
+            self.layouts[whole] = {"DeviceIdentifier": whole, "Content": "GUID_partition_scheme", "Partitions": partitions,
+                                   "OSInternal": False, "Size": 2100000000}
         for n in (1, 2):
             self.info[f"disk7s{n}"] = {**external, "DeviceIdentifier": f"disk7s{n}", "APFSContainerReference": "disk7", "VolumeUUID": VOLUMES[n-1]}
 
@@ -70,14 +71,23 @@ class Storage:
         if args == ["apfs", "list", "-plist"]:
             return {"Containers": [copy.deepcopy(self.container)] if self.present else []}
         if args[:2] == ["info", "-plist"]:
+            if args[2] in self.layouts:
+                raise subprocess.TimeoutExpired("whole-disk info fixture", 10)
             value = copy.deepcopy(self.info[args[2]])
             if args[2].startswith("disk7s"):
                 value["MountPoint"] = "/Volumes/Synthetic" if self.mounted else ""
             return value
         if args == ["list", "-plist"]:
             return {"AllDisks": sorted(self.present), "AllDisksAndPartitions": [self.layouts[p] for p in sorted(self.present)]}
-        if args[:2] == ["list", "-plist"] and args[2] in self.present:
-            return {"AllDisksAndPartitions": [copy.deepcopy(self.layouts[args[2]])]}
+        if args[:4] == ["list", "-plist", "external", "physical"] and len(args) == 5:
+            whole = args[4]
+            physical = self.info.get(whole, {})
+            if (whole not in self.present or physical.get("Internal") is not False
+                    or physical.get("VirtualOrPhysical") != "Physical"):
+                return {"WholeDisks": [], "AllDisks": [], "AllDisksAndPartitions": []}
+            layout = copy.deepcopy(self.layouts[whole])
+            return {"WholeDisks": [whole], "AllDisks": [whole, *(p["DeviceIdentifier"] for p in layout["Partitions"])],
+                    "AllDisksAndPartitions": [layout]}
         raise AssertionError("unexpected read-only command: " + repr(args))
 
     def mutate(self, args):
@@ -125,6 +135,86 @@ class ControlsTests(unittest.TestCase):
     def test_force_is_explicit_on_every_action_never_an_automatic_retry(self):
         self.assertEqual(self.eject(force=True)[0], 200)
         self.assertEqual(self.storage.actions, [["unmountDisk", "force", "disk6"], ["eject", "force", "disk4"], ["eject", "force", "disk5"]])
+
+    def test_preflight_uses_filtered_list_when_whole_info_would_stall(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.storage.read(["info", "-plist", "disk4"])
+        self.storage.calls.clear()
+        result = self.controls.eligibility(RAID)
+        self.assertEqual((result["eligible"], result["members"], result["volumes"]), (True, 2, 2))
+        for whole in ("disk4", "disk5"):
+            self.assertIn(["list", "-plist", "external", "physical", whole], self.storage.calls)
+            self.assertNotIn(["info", "-plist", whole], self.storage.calls)
+        self.assertFalse(self.storage.actions)
+        self.assertFalse((self.state / "control-state.json").exists())
+
+    def test_explicit_device_filter_excludes_internal_and_virtual_media(self):
+        for key, value in (("Internal", True), ("VirtualOrPhysical", "Virtual")):
+            original = self.storage.info["disk4"][key]
+            self.storage.info["disk4"][key] = value
+            with self.subTest(key=key):
+                inventory = self.storage.read(["list", "-plist", "external", "physical", "disk4"])
+                self.assertEqual(inventory["WholeDisks"], [])
+                self.assertEqual(self.eject()[1]["reason"], "unsupported_topology")
+                self.assertFalse(self.storage.actions)
+            self.storage.info["disk4"][key] = original
+
+    def test_filtered_whole_and_partition_inventories_must_be_complete_and_exact(self):
+        base = self.storage.read(["list", "-plist", "external", "physical", "disk4"])
+        bad = []
+        for key, values in (("WholeDisks", (None, [], ["disk5"], ["disk4", "disk5"])),
+                            ("AllDisksAndPartitions", (None, [], [self.storage.layouts["disk5"]],
+                                                       [self.storage.layouts["disk4"], self.storage.layouts["disk5"]])),
+                            ("AllDisks", (None, [], ["disk4", "disk4s1", "disk4s2"],
+                                          ["disk4", "disk4s1", "disk4s2", "disk4s2"],
+                                          ["disk4", "disk4s1", "disk4s2", "disk4s3", "disk4s4"]))):
+            for value in values:
+                changed = copy.deepcopy(base)
+                changed[key] = value
+                bad.append(changed)
+        for index, inventory in enumerate(bad):
+            def read(args):
+                if args == ["list", "-plist", "external", "physical", "disk4"]:
+                    return inventory
+                return self.storage.read(args)
+            self.controls.run = read
+            with self.subTest(case=index):
+                self.assertEqual(self.eject()[1]["reason"], "unsupported_topology")
+                self.assertFalse(self.storage.actions)
+
+    def test_filtered_gpt_internal_flag_and_size_are_mandatory(self):
+        for key, values in (("Content", (None, "Apple_APFS")), ("OSInternal", (None, True, 0)),
+                            ("Size", (None, 0, -1, True, 2**63))):
+            original = self.storage.layouts["disk4"][key]
+            for value in values:
+                self.storage.layouts["disk4"][key] = value
+                with self.subTest(key=key, value=value):
+                    self.assertEqual(self.eject()[1]["reason"], "unsupported_topology")
+                    self.assertFalse(self.storage.actions)
+            self.storage.layouts["disk4"][key] = original
+
+    def test_every_gpt_partition_retains_external_system_ejectability_checks(self):
+        for part in ("disk4s1", "disk4s2", "disk4s3"):
+            for key, value in (("Internal", True), ("OSInternalMedia", True), ("SystemImage", True),
+                               ("Ejectable", False), ("ParentWholeDisk", "disk5"),
+                               ("MountPoint", "/Volumes/Unexpected"), ("DiskUUID", VOLUMES[0])):
+                original = self.storage.info[part][key]
+                self.storage.info[part][key] = value
+                with self.subTest(part=part, key=key):
+                    self.assertEqual(self.eject()[0], 409)
+                    self.assertFalse(self.storage.actions)
+                self.storage.info[part][key] = original
+
+    def test_member_path_is_an_opaque_required_identity_and_whole_size_is_preserved(self):
+        opaque = "fixture-provider-path:do-not-parse/member"
+        self.storage.info["disk4s2"]["DeviceTreePath"] = opaque
+        plan = app.member_plan(self.storage.read, self.storage.raid["Members"][0], RAID)
+        self.assertEqual((plan["tree"], plan["size"]), (opaque, 2100000000))
+        for value in (None, "", "x" * 257):
+            self.storage.info["disk4s2"]["DeviceTreePath"] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                app.member_plan(self.storage.read, self.storage.raid["Members"][0], RAID)
+        self.assertFalse(self.storage.actions)
 
     def test_active_rebuild_blocks_normal_and_force_before_any_write(self):
         self.storage.raid["Members"][1]["MemberStatus"] = "Rebuilding"
@@ -221,7 +311,7 @@ class ControlsTests(unittest.TestCase):
         normal = self.storage.mutate
         def action(args):
             code = normal(args)
-            self.storage.info["disk4"]["DeviceTreePath"] = "/replacement/device"
+            self.storage.info["disk4s2"]["DeviceTreePath"] = "/replacement/device"
             return code
         self.controls.mutate = action
         self.assertEqual(self.eject()[1]["reason"], "identity_changed")
