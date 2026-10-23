@@ -70,3 +70,28 @@ CI uses synthetic fixtures and mocked storage/lifecycle commands. It does not re
 The shipped example's four field paths are tested against representative fresh and failed API observations. Its HTTP/authentication pattern follows Homepage's supported Custom API interface. The native service and a separate dashboard consumer were tested together; this release does **not** claim an end-to-end test inside a running Homepage installation.
 
 For your deployment, follow the [Homepage verification steps](homepage.md#verify-and-troubleshoot). Rebuild and failure fixtures verify parser behavior without risking healthy storage; they do not prove how every OS/hardware combination formats a live rebuild.
+
+## 0.3.0 optional controls validation — 23 October 2026
+
+Portable control fixtures cover normal/explicit-force ordering, complete identity
+and topology validation, rebuild/unknown/system/shared-storage refusal, credential
+separation, confirmation/body/method guards, concurrent/duplicate requests,
+private durable intent, timeout/partial failure, postcondition verification and
+stopped control-policy lifecycle. Native command execution is mocked; no test
+unmounts, ejects, repairs or rebuilds real storage.
+
+A read-only preflight on the existing macOS host accepted its currently Online
+external two-member APFS mirror, with dedicated GPT disks containing EFI,
+Apple_RAID and member-referenced Apple_Boot helpers, and two APFS volumes (normal
+and Backup role). This establishes current topology parsing only. Actual normal
+and forced ejection, macOS permission/Busy behavior and two-member completion
+have **not** been exercised on production storage. A future complete acceptance
+test requires separately approved disposable media; monitoring/preflight success
+must not be presented as native ejection acceptance.
+
+The reviewed native force syntax comes from macOS 27.0.1's installed `diskutil`
+manual. This is not verification of every supported macOS release. An eligible
+preflight and `force_supported:true` describe the helper's admitted action, not
+native permission or a successful ejection. External hotplug/local disk operators
+can still change storage between separate read and mutation commands; no claim
+of atomic storage exclusion is made.

@@ -514,6 +514,72 @@ class LifecycleTests(unittest.TestCase):
                 app.load_config(self.state / "config.json")
 
 
+    def test_eject_controls_opt_in_preserves_monitoring_secret_and_stopped_intent(self):
+        self.install()
+        monitoring = (self.state / "token").read_bytes()
+        lifecycle.configure_controls(self.state, "controls-enable", [RAID])
+        control = (self.state / "control-token").read_bytes()
+        self.assertNotEqual(control, monitoring)
+        self.assertEqual((self.state / "control-token").stat().st_mode & 0o777, 0o600)
+        config, _ = app.load_config(self.state / "config.json")
+        self.assertEqual(config["controls"], {"enabled": True, "raids": [RAID]})
+        lifecycle.configure_controls(self.state, "controls-enable", [RAID])
+        self.install()
+        self.assertEqual((self.state / "token").read_bytes(), monitoring)
+        self.assertEqual((self.state / "control-token").read_bytes(), control)
+        self.assertEqual(self.native_calls, [])
+        self.assertIs(self.definition()["Disabled"], True)
+
+    def test_eject_controls_require_stopped_job_and_strict_allowlist(self):
+        self.install()
+        original = (self.state / "config.json").read_bytes()
+        for allowed in ([], [RAID, RAID], ["disk4"], ["not-a-uuid"]):
+            with self.subTest(allowed=allowed), self.assertRaises((ValueError, AttributeError)):
+                lifecycle.configure_controls(self.state, "controls-enable", allowed)
+        self.assertEqual((self.state / "config.json").read_bytes(), original)
+        self.start()
+        with self.assertRaisesRegex(ValueError, "stop helper"):
+            lifecycle.configure_controls(self.state, "controls-enable", [RAID])
+        self.assertFalse((self.state / "control-token").exists())
+
+    def test_eject_controls_disable_and_clear_preserve_tokens_and_never_touch_storage(self):
+        self.install()
+        lifecycle.configure_controls(self.state, "controls-enable", [RAID])
+        tokens = [(self.state / name).read_bytes() for name in ("token", "control-token")]
+        journal = {"schema_version": 1, "requests": [{"id": "AAAAAAAA-0000-4000-8000-000000000001", "raid": RAID,
+                   "time": 1, "state": "started", "outcome": None}]}
+        lifecycle.atomic_private(self.state / "control-state.json", json.dumps(journal).encode())
+        lifecycle.configure_controls(self.state, "controls-disable")
+        self.assertNotIn("controls", app.load_config(self.state / "config.json")[0])
+        self.assertEqual(json.loads((self.state / "control-state.json").read_text()), journal)
+        with self.assertRaisesRegex(ValueError, "--confirm"):
+            lifecycle.configure_controls(self.state, "controls-clear")
+        lifecycle.configure_controls(self.state, "controls-clear", confirm=RAID)
+        self.assertEqual(json.loads((self.state / "control-state.json").read_text())["requests"][0]["state"], "finished")
+        self.assertEqual([(self.state / name).read_bytes() for name in ("token", "control-token")], tokens)
+        self.assertEqual(self.native_calls, [])
+
+    def test_eject_controls_can_be_disabled_with_missing_control_secret(self):
+        self.install()
+        lifecycle.configure_controls(self.state, "controls-enable", [RAID])
+        (self.state / "control-token").unlink()
+        with self.assertRaises(FileNotFoundError):
+            app.load_config(self.state / "config.json")
+        lifecycle.configure_controls(self.state, "controls-disable")
+        self.assertNotIn("controls", app.load_config(self.state / "config.json")[0])
+        self.assertEqual(self.native_calls, [])
+
+    def test_eject_control_secret_cannot_equal_monitoring_or_use_unsafe_file(self):
+        self.install()
+        lifecycle.atomic_private(self.state / "control-token", (self.state / "token").read_bytes())
+        with self.assertRaisesRegex(ValueError, "distinct control token"):
+            lifecycle.configure_controls(self.state, "controls-enable", [RAID])
+        (self.state / "control-token").chmod(0o644)
+        with self.assertRaises(ValueError):
+            lifecycle.configure_controls(self.state, "controls-enable", [RAID])
+
+
+
 class NativeParsingTests(unittest.TestCase):
     def test_disabled_override_absent_true_false_and_malformed(self):
         for text, expected in (("disabled services = {}", None),
